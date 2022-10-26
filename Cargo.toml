@@ -4,6 +4,10 @@ members = [
     "song",
     "rp2040-project-template",
 ]
+exclude = [
+    "rp-hal",
+    "critical-section",
+]
 
 # cargo build/run
 [profile.dev]
