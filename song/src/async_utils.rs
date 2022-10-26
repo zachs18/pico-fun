@@ -126,21 +126,18 @@ impl Runtime {
     }
 }
 
-pub struct Sleep<Alarm: AlarmExt> {
-    alarm: Option<Alarm>,
+pub struct Sleep<'a, Alarm: AlarmExt> {
+    alarm: &'a mut Alarm,
     wake: Arc<(AtomicBool, Mutex<RefCell<Option<Waker>>>)>,
 }
 
-impl<Alarm: AlarmExt> Sleep<Alarm> {
+impl<'a, Alarm: AlarmExt> Sleep<'a, Alarm> {
     pub fn new<const NUM: u32, const DENOM: u32>(
-        mut alarm: Alarm,
+        alarm: &'a mut Alarm,
         countdown: Duration<u32, NUM, DENOM>,
-    ) -> Result<Self, (ScheduleAlarmError, Alarm)> {
+    ) -> Result<Self, ScheduleAlarmError> {
         alarm.disable_interrupt();
         alarm.clear_interrupt();
-        unsafe {
-            bsp::hal::pac::NVIC::unmask(Alarm::interrupt());
-        };
 
         match alarm.schedule(countdown) {
             Ok(()) => {
@@ -158,39 +155,48 @@ impl<Alarm: AlarmExt> Sleep<Alarm> {
                     })
                 });
 
+                unsafe {
+                    bsp::hal::pac::NVIC::unmask(Alarm::interrupt());
+                };
                 alarm.enable_interrupt();
 
-                Ok(Self {
-                    alarm: Some(alarm),
-                    wake,
-                })
+                Ok(Self { alarm, wake })
             }
-            Err(err) => Err((err, alarm)),
+            Err(err) => Err(err),
         }
     }
 }
 
-impl<Alarm: AlarmExt> Future for Sleep<Alarm> {
-    type Output = Alarm;
+impl<'a, Alarm: AlarmExt> Future for Sleep<'a, Alarm> {
+    type Output = ();
 
     fn poll(
-        mut self: StdPin<&mut Self>,
+        self: StdPin<&mut Self>,
         cx: &mut core::task::Context<'_>,
     ) -> core::task::Poll<Self::Output> {
         critical_section::with(|cs| {
             if self.wake.0.load(Ordering::Acquire) {
-                let ret = Poll::Ready(
-                    self.as_mut()
-                        .alarm
-                        .take()
-                        .expect("Should not poll delay after completion"),
-                );
-                ret
+                Poll::Ready(())
             } else {
                 self.wake.1.borrow(cs).replace(Some(cx.waker().clone()));
 
                 Poll::Pending
             }
+        })
+    }
+}
+
+impl<'a, Alarm: AlarmExt> Drop for Sleep<'a, Alarm> {
+    fn drop(&mut self) {
+        critical_section::with(|cs| {
+            self.alarm.disable_interrupt();
+            self.alarm.clear_interrupt();
+            bsp::hal::pac::NVIC::mask(Alarm::interrupt());
+            if !self.wake.0.load(Ordering::Acquire) {
+                // Remove the waker (Prob not necessary)
+                self.wake.1.borrow(cs).replace(None);
+            }
+            self.alarm.unregister();
         })
     }
 }

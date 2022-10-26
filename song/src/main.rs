@@ -582,7 +582,7 @@ fn real_main() -> ! {
     let mut runtime = Runtime::new(/* core.SYST, clocks.system_clock.freq().to_Hz() */);
 
     let mut timer = Timer::new(pac.TIMER, &mut pac.RESETS);
-    let mut alarm1 = Some(timer.alarm_1().unwrap());
+    let mut alarm1 = timer.alarm_1().unwrap();
     runtime.spawn({
         async move {
             loop {
@@ -596,12 +596,10 @@ fn real_main() -> ! {
                         .unwrap();
                 });
 
-                alarm1 = Some(
-                    Sleep::new(alarm1.unwrap(), MillisDurationU32::from_ticks(500))
-                        .ok()
-                        .unwrap()
-                        .await,
-                );
+                Sleep::new(&mut alarm1, MillisDurationU32::from_ticks(500))
+                    .ok()
+                    .unwrap()
+                    .await;
 
                 critical_section::with(|cs| {
                     PANIC_LED
@@ -613,17 +611,15 @@ fn real_main() -> ! {
                         .unwrap();
                 });
 
-                alarm1 = Some(
-                    Sleep::new(alarm1.unwrap(), MillisDurationU32::from_ticks(500))
-                        .ok()
-                        .unwrap()
-                        .await,
-                );
+                Sleep::new(&mut alarm1, MillisDurationU32::from_ticks(500))
+                    .ok()
+                    .unwrap()
+                    .await;
             }
         }
     });
 
-    let mut alarm0 = Some(timer.alarm_0().unwrap());
+    let mut alarm0 = timer.alarm_0().unwrap();
     loop {
         runtime.block_on(async {
             // let mut play_note = {
@@ -651,33 +647,30 @@ fn real_main() -> ! {
             fn play_note<'a, Alarm: AlarmExt + 'static>(
                 note: Note,
                 beep_pwm: &'a mut Slice<Pwm1, FreeRunning>,
-                alarm: Alarm,
-            ) -> StdPin<Box<dyn Future<Output = Alarm> + 'a>> {
+                alarm: &'a mut Alarm,
+            ) -> StdPin<Box<dyn Future<Output = ()> + 'a>> {
                 match note {
                     Play(note, time) => Box::pin(async move {
                         beep_pwm.disable();
                         set_midi_note(note as isize + 69, beep_pwm);
                         beep_pwm.enable();
-                        let alarm = Sleep::new(alarm, MillisDurationU32::from_ticks(time.into()))
+                        Sleep::new(alarm, MillisDurationU32::from_ticks(time.into()))
                             .ok()
                             .unwrap()
                             .await;
-                        alarm
                     }),
                     Rest(time) => Box::pin(async move {
-                        beep_pwm.disable();
-                        let alarm = Sleep::new(alarm, MillisDurationU32::from_ticks(time.into()))
+                        Sleep::new(alarm, MillisDurationU32::from_ticks(time.into()))
                             .ok()
                             .unwrap()
                             .await;
                         beep_pwm.enable();
-                        alarm
                     }),
                 }
             }
 
-            for (note, _lyric) in SONG_1 {
-                alarm0 = Some(play_note(*note, &mut beep_pwm, alarm0.take().unwrap()).await);
+            for &(note, _lyric) in SONG_1 {
+                play_note(note, &mut beep_pwm, &mut alarm0).await;
             }
         })
     }
