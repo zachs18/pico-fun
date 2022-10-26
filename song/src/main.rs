@@ -6,7 +6,7 @@ extern crate alloc;
 
 use core::{arch::asm, cell::RefCell, mem::MaybeUninit, panic::PanicInfo};
 
-use alloc::{boxed::Box, format};
+use alloc::boxed::Box;
 use async_utils::{Runtime, StdPin};
 use critical_section::Mutex;
 use fugit::MillisDurationU32;
@@ -448,22 +448,14 @@ fn real_main() -> ! {
     //     beep_pwm.set_top(top);
     // };
 
-    fn set_midi_note(
-        note: isize,
-        beep_pwm: &mut Slice<Pwm1, FreeRunning>,
-        write: impl Fn(&str, u32),
-    ) {
+    fn set_midi_note(note: isize, beep_pwm: &mut Slice<Pwm1, FreeRunning>) {
         // let mut set_midi_note = |note: isize| {
-        write(&file!()[9..], line!());
         let (div_int, div_frac, top) = unsafe { MIDI_NOTES[note as usize] };
-        write(&file!()[9..], line!());
         beep_pwm.disable(); // This may fix the occasional screeching?
-        write(&file!()[9..], line!());
         beep_pwm.set_div_int(div_int);
         beep_pwm.set_div_frac(div_frac);
         beep_pwm.set_top(top);
         beep_pwm.enable();
-        write(&file!()[9..], line!());
         // };
     }
 
@@ -588,7 +580,49 @@ fn real_main() -> ! {
         }
     }
     let mut runtime = Runtime::new(/* core.SYST, clocks.system_clock.freq().to_Hz() */);
+
     let mut timer = Timer::new(pac.TIMER, &mut pac.RESETS);
+    let mut alarm1 = Some(timer.alarm_1().unwrap());
+    runtime.spawn({
+        async move {
+            loop {
+                critical_section::with(|cs| {
+                    PANIC_LED
+                        .borrow(cs)
+                        .borrow_mut()
+                        .as_mut()
+                        .unwrap()
+                        .set_high()
+                        .unwrap();
+                });
+
+                alarm1 = Some(
+                    Sleep::new(alarm1.unwrap(), MillisDurationU32::from_ticks(500))
+                        .ok()
+                        .unwrap()
+                        .await,
+                );
+
+                critical_section::with(|cs| {
+                    PANIC_LED
+                        .borrow(cs)
+                        .borrow_mut()
+                        .as_mut()
+                        .unwrap()
+                        .set_low()
+                        .unwrap();
+                });
+
+                alarm1 = Some(
+                    Sleep::new(alarm1.unwrap(), MillisDurationU32::from_ticks(500))
+                        .ok()
+                        .unwrap()
+                        .await,
+                );
+            }
+        }
+    });
+
     let mut alarm0 = Some(timer.alarm_0().unwrap());
     loop {
         runtime.block_on(async {
@@ -618,50 +652,33 @@ fn real_main() -> ! {
                 note: Note,
                 beep_pwm: &'a mut Slice<Pwm1, FreeRunning>,
                 alarm: Alarm,
-                write: Arc<impl Fn(&str, u32) + 'a>,
             ) -> StdPin<Box<dyn Future<Output = Alarm> + 'a>> {
                 match note {
                     Play(note, time) => Box::pin(async move {
-                        write(&file!()[9..], line!());
                         beep_pwm.disable();
-                        write(&file!()[9..], line!());
-                        set_midi_note(note as isize + 69, beep_pwm, &*write);
-                        write(&file!()[9..], line!());
+                        set_midi_note(note as isize + 69, beep_pwm);
                         beep_pwm.enable();
-                        write(&file!()[9..], line!());
-                        let alarm =
-                            Sleep::new(&*write, alarm, MillisDurationU32::from_ticks(time.into()))
-                                .ok()
-                                .unwrap()
-                                .await;
-                        write(&file!()[9..], line!());
+                        let alarm = Sleep::new(alarm, MillisDurationU32::from_ticks(time.into()))
+                            .ok()
+                            .unwrap()
+                            .await;
                         alarm
                     }),
                     Rest(time) => Box::pin(async move {
-                        write(&file!()[9..], line!());
                         beep_pwm.disable();
-                        write(&file!()[9..], line!());
-                        let alarm =
-                            Sleep::new(&*write, alarm, MillisDurationU32::from_ticks(time.into()))
-                                .ok()
-                                .unwrap()
-                                .await;
-                        write(&file!()[9..], line!());
+                        let alarm = Sleep::new(alarm, MillisDurationU32::from_ticks(time.into()))
+                            .ok()
+                            .unwrap()
+                            .await;
                         beep_pwm.enable();
-                        write(&file!()[9..], line!());
                         alarm
                     }),
                 }
             }
-            write(&file!()[9..], line!());
+
             for (note, _lyric) in SONG_1 {
-                write(&file!()[9..], line!());
-                alarm0 = Some(
-                    play_note(*note, &mut beep_pwm, alarm0.take().unwrap(), write.clone()).await,
-                );
-                write(&file!()[9..], line!());
+                alarm0 = Some(play_note(*note, &mut beep_pwm, alarm0.take().unwrap()).await);
             }
-            write(&file!()[9..], line!());
         })
     }
     // loop {

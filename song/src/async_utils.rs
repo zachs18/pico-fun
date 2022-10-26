@@ -63,10 +63,22 @@ impl Runtime {
         loop {
             match future.as_mut().poll(&mut cx) {
                 core::task::Poll::Ready(val) => return val,
-                core::task::Poll::Pending => cortex_m::asm::wfi(),
+                core::task::Poll::Pending => {
+                    if !self.tasks.is_empty() {
+                        self.tasks
+                            .retain_mut(|task| match task.as_mut().poll(&mut cx) {
+                                core::task::Poll::Ready(_) => false,
+                                core::task::Poll::Pending => true,
+                            });
+                        if !self.wake.0.load(Ordering::Acquire) {
+                            wfi();
+                        }
+                    }
+                }
             }
         }
     }
+
     pub fn spawn<F: Future>(&mut self, f: F) -> JoinHandle<F::Output>
     where
         F: 'static,
@@ -114,15 +126,13 @@ impl Runtime {
     }
 }
 
-pub struct Sleep<F: Fn(&str, u32), Alarm: AlarmExt> {
-    write: F, // for debugging only
+pub struct Sleep<Alarm: AlarmExt> {
     alarm: Option<Alarm>,
     wake: Arc<(AtomicBool, Mutex<RefCell<Option<Waker>>>)>,
 }
 
-impl<F: Fn(&str, u32), Alarm: AlarmExt> Sleep<F, Alarm> {
+impl<Alarm: AlarmExt> Sleep<Alarm> {
     pub fn new<const NUM: u32, const DENOM: u32>(
-        write: F,
         mut alarm: Alarm,
         countdown: Duration<u32, NUM, DENOM>,
     ) -> Result<Self, (ScheduleAlarmError, Alarm)> {
@@ -131,10 +141,9 @@ impl<F: Fn(&str, u32), Alarm: AlarmExt> Sleep<F, Alarm> {
         unsafe {
             bsp::hal::pac::NVIC::unmask(Alarm::interrupt());
         };
-        write(&file!()[9..], line!());
+
         match alarm.schedule(countdown) {
             Ok(()) => {
-                write(&file!()[9..], line!());
                 let wake: Arc<(AtomicBool, Mutex<RefCell<Option<Waker>>>)> =
                     Arc::new((AtomicBool::new(false), Mutex::new(RefCell::new(None))));
                 alarm.register({
@@ -148,47 +157,38 @@ impl<F: Fn(&str, u32), Alarm: AlarmExt> Sleep<F, Alarm> {
                         })
                     })
                 });
-                write(&file!()[9..], line!());
+
                 alarm.enable_interrupt();
-                write(&file!()[9..], line!());
+
                 Ok(Self {
-                    write,
                     alarm: Some(alarm),
                     wake,
                 })
             }
-            Err(err) => {
-                write(&file!()[9..], line!());
-                Err((err, alarm))
-            }
+            Err(err) => Err((err, alarm)),
         }
     }
 }
 
-impl<F: Fn(&str, u32) + Unpin, Alarm: AlarmExt> Future for Sleep<F, Alarm> {
+impl<Alarm: AlarmExt> Future for Sleep<Alarm> {
     type Output = Alarm;
 
     fn poll(
         mut self: StdPin<&mut Self>,
         cx: &mut core::task::Context<'_>,
     ) -> core::task::Poll<Self::Output> {
-        (self.write)(&file!()[9..], line!());
         critical_section::with(|cs| {
-            (self.write)(&file!()[9..], line!());
             if self.wake.0.load(Ordering::Acquire) {
-                (self.write)(&file!()[9..], line!());
                 let ret = Poll::Ready(
                     self.as_mut()
                         .alarm
                         .take()
                         .expect("Should not poll delay after completion"),
                 );
-                (self.write)(&file!()[9..], line!());
                 ret
             } else {
-                (self.write)(&file!()[9..], line!());
                 self.wake.1.borrow(cs).replace(Some(cx.waker().clone()));
-                (self.write)(&file!()[9..], line!());
+
                 Poll::Pending
             }
         })

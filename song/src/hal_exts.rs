@@ -1,6 +1,5 @@
 use alloc::boxed::Box;
 use core::cell::RefCell;
-use embedded_hal::digital::v2::OutputPin;
 
 use crate::bsp::{self, hal::pac::interrupt};
 use critical_section::Mutex;
@@ -29,22 +28,9 @@ macro_rules! make_timer_irq {
                 }
             });
 
-            critical_section::with(|cs| {
-                let mut led = crate::PANIC_LED.borrow(cs).borrow_mut();
-                if let Some(ref mut led) = *led {
-                    let _ = led.set_high();
-                }
-            });
             if let Some(handler) = HANDLER {
                 handler();
             }
-
-            critical_section::with(|cs| {
-                let mut led = crate::PANIC_LED.borrow(cs).borrow_mut();
-                if let Some(ref mut led) = *led {
-                    let _ = led.set_low();
-                }
-            });
 
             // TODO: I thought the docs for `clear_interrupt` said that the interrupt wouldn't run again, but that appears to not be true.
             let mut aaa: $alarm = unsafe { core::mem::transmute(()) };
