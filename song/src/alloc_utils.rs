@@ -19,10 +19,15 @@ unsafe impl GlobalAlloc for Allocator {
     unsafe fn alloc(&self, layout: core::alloc::Layout) -> *mut u8 {
         critical_section::with(|cs| {
             let mut heap = self.heap.borrow(cs).borrow_mut();
-            match heap.allocate_first_fit(layout) {
+            let ptr = match heap.allocate_first_fit(layout) {
                 Ok(ptr) => ptr.as_ptr(),
-                Err(_) => core::ptr::null_mut(),
-            }
+                Err(_) => {
+                    crate::PANIC_LINE.store(line!(), Ordering::Release);
+                    core::ptr::null_mut()
+                }
+            };
+            crate::MEM_FREE.store(heap.free(), Ordering::Release);
+            ptr
         })
     }
 

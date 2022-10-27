@@ -4,13 +4,22 @@
 #![no_main]
 extern crate alloc;
 
-use core::{arch::asm, cell::RefCell, mem::MaybeUninit, panic::PanicInfo};
+use core::{
+    arch::asm,
+    cell::RefCell,
+    convert::Infallible,
+    mem::MaybeUninit,
+    panic::PanicInfo,
+    sync::atomic::{AtomicU32, AtomicUsize, Ordering},
+};
 
 use alloc::boxed::Box;
 use async_utils::{Runtime, StdPin};
 use critical_section::Mutex;
 use fugit::MillisDurationU32;
 use futures::Future;
+use i2c_pio::I2C;
+use lcd::Lcd;
 // Provide an alias for our BSP so we can switch targets quickly.
 // Uncomment the BSP you included in Cargo.toml, the rest of the code does not need to change.
 use rp_pico as bsp;
@@ -22,13 +31,15 @@ use bsp::{
         clocks::{init_clocks_and_plls, Clock},
         gpio::{bank0::*, AnyPin, FunctionPwm, Input, Output, Pin, PullUp, PushPull},
         pac,
+        pio::SM0,
         prelude::_rphal_pio_PIOExt,
         pwm::{FreeRunning, Pwm1, Slice, Slices},
         sio::Sio,
+        timer::Alarm2,
         watchdog::Watchdog,
         Timer,
     },
-    pac::interrupt,
+    pac::{interrupt, PIO0},
 };
 
 use embedded_hal::{digital::v2::OutputPin, PwmPin};
@@ -36,6 +47,7 @@ use embedded_hal::{digital::v2::OutputPin, PwmPin};
 pub mod alloc_utils;
 pub mod async_utils;
 pub mod hal_exts;
+mod lcd;
 
 /// I fully understand why `set_state` takes a `PinState` and not a `bool`, but it's annoying so I did this.
 trait OutputPinExt: OutputPin {
@@ -89,7 +101,7 @@ use Note::*;
 // USB Communications Class Device support
 use usbd_serial::SerialPort;
 
-use crate::{alloc_utils::Arc, async_utils::Sleep, hal_exts::AlarmExt};
+use crate::{alloc_utils::Arc, async_utils::Sleep, hal_exts::AlarmExt, lcd::LcdWriteError};
 
 /// The USB Device Driver (shared with the interrupt).
 static mut USB_DEVICE: Option<UsbDevice<bsp::hal::usb::UsbBus>> = None;
@@ -102,6 +114,12 @@ static mut USB_SERIAL: Option<SerialPort<bsp::hal::usb::UsbBus>> = None;
 
 static PANIC_LED: Mutex<RefCell<Option<Pin<Gpio25, Output<PushPull>>>>> =
     Mutex::new(RefCell::new(None));
+static PANIC_LINE: AtomicU32 = AtomicU32::new(0);
+static MEM_FREE: AtomicUsize = AtomicUsize::new(0);
+
+static PANIC_LCD_BAD_UNSAFE: Mutex<
+    RefCell<Option<Lcd<'static, I2C<PIO0, (PIO0, SM0), Gpio8, Gpio9>, Alarm2>>>,
+> = Mutex::new(RefCell::new(None));
 
 fn noploop(count: usize) {
     for _ in 0..count {
@@ -112,10 +130,72 @@ fn noploop(count: usize) {
 }
 
 #[panic_handler]
-fn panic_led(_: &PanicInfo) -> ! {
+fn panic_led(info: &PanicInfo) -> ! {
     critical_section::with(|cs| {
         let mut led = PANIC_LED.borrow(cs).borrow_mut();
-        if let Some(ref mut led) = *led {
+        let mut leds = PINS.borrow(cs).borrow_mut();
+        let (file, line) = info
+            .location()
+            .map(|loc| (loc.file(), loc.line()))
+            .unwrap_or(("", 0));
+        if let Some((led, (led1, led2, led3, led4, ..))) = led.as_mut().zip(leds.as_mut()) {
+            let mut set_leds = |value: u8| -> Result<(), _> {
+                led1.set(value & 8 != 0)?;
+                led2.set(value & 4 != 0)?;
+                led3.set(value & 2 != 0)?;
+                led4.set(value & 1 != 0)
+            };
+            loop {
+                for chunk in (0..8).rev() {
+                    let chunk = line >> (chunk * 4);
+                    let _ = set_leds(chunk as u8);
+                    noploop(2097152);
+                    let _ = set_leds(0);
+                    noploop(2097152);
+                }
+                let _ = led.set_high();
+                noploop(1048576);
+                let _ = led.set_low();
+                noploop(1048576);
+
+                let line = PANIC_LINE.load(Ordering::Acquire);
+                for chunk in (0..8).rev() {
+                    let chunk = line >> (chunk * 4);
+                    let _ = set_leds(chunk as u8);
+                    noploop(2097152);
+                    let _ = set_leds(0);
+                    noploop(2097152);
+                }
+                let _ = led.set_high();
+                noploop(1048576);
+                let _ = led.set_low();
+                noploop(1048576);
+
+                let bytes = MEM_FREE.load(Ordering::Acquire);
+                for chunk in (0..8).rev() {
+                    let chunk = bytes >> (chunk * 4);
+                    let _ = set_leds(chunk as u8);
+                    noploop(2097152);
+                    let _ = set_leds(0);
+                    noploop(2097152);
+                }
+                let _ = led.set_high();
+                noploop(1048576);
+                let _ = led.set_low();
+                noploop(1048576);
+
+                for c in file.chars() {
+                    let _ = set_leds(c as u8);
+                    noploop(2097152);
+                    let _ = set_leds(0);
+                    noploop(2097152);
+                }
+                let _ = led.set_high();
+                noploop(1048576);
+                let _ = led.set_low();
+                noploop(1048576);
+            }
+        } else if let Some(ref mut led) = *led {
             loop {
                 let _ = led.set_high();
                 noploop(1048576);
@@ -369,8 +449,6 @@ fn real_main() -> ! {
     .ok()
     .unwrap();
 
-    let mut delay = cortex_m::delay::Delay::new(core.SYST, clocks.system_clock.freq().to_Hz());
-
     let pins = bsp::Pins::new(
         pac.IO_BANK0,
         pac.PADS_BANK0,
@@ -476,24 +554,6 @@ fn real_main() -> ! {
 
     let (mut pio, sm0, _a, _b, _c) = pac.PIO0.split(&mut pac.RESETS);
 
-    let mut i2c = i2c_pio::I2C::new(
-        &mut pio,
-        pins.gpio8,
-        pins.gpio9,
-        sm0,
-        fugit::RateExtU32::kHz(100),
-        clocks.system_clock.freq(),
-    );
-
-    let lcd = lcd_lcm1602_i2c::Lcd::new(&mut i2c, &mut delay)
-        .rows(2)
-        .cursor_on(true)
-        .address(0x27)
-        .init()
-        .unwrap();
-
-    let lcd = Mutex::new(RefCell::new(lcd));
-
     #[cfg(any())]
     let write = Arc::new(move |file: &str, line: u32| {
         critical_section::with(|cs| {
@@ -513,9 +573,9 @@ fn real_main() -> ! {
             lcd.write_str("buf").unwrap();
         })
     });
-    let write = Arc::new(|_: &str, _| ());
+    // let write = Arc::new(|_: &str, _| ());
 
-    write("Hello, world!", 666);
+    // write("Hello, world!", 666);
 
     // let mut set_leds = |value: u8| -> Result<(), _> {
     //     led1_pin.set(value & 8 != 0)?;
@@ -582,6 +642,62 @@ fn real_main() -> ! {
     let mut runtime = Runtime::new(/* core.SYST, clocks.system_clock.freq().to_Hz() */);
 
     let mut timer = Timer::new(pac.TIMER, &mut pac.RESETS);
+    let mut alarm2 = timer.alarm_2().unwrap();
+    let mut alarm3 = timer.alarm_3().unwrap();
+
+    runtime.spawn(async move {
+        let x: StdPin<
+            Box<dyn Future<Output = Result<Infallible, LcdWriteError<i2c_pio::Error>>> + Send>,
+        > = Box::pin(async move {
+            let mut i2c = i2c_pio::I2C::new(
+                &mut pio,
+                pins.gpio8,
+                pins.gpio9,
+                sm0,
+                fugit::RateExtU32::kHz(100),
+                clocks.system_clock.freq(),
+            );
+            let mut lcd = lcd::Lcd::new(&mut i2c, &mut alarm2)
+                .rows(2)
+                .cursor_on(true)
+                .address(0x27)
+                .init()
+                .await?;
+
+            loop {
+                lcd.clear().await?;
+                lcd.write_str("Hello, world!").await?;
+                PANIC_LINE.store(line!(), Ordering::Release);
+                Sleep::new(&mut alarm3, MillisDurationU32::from_ticks(500))?.await;
+                PANIC_LINE.store(line!(), Ordering::Release);
+
+                lcd.clear().await?;
+                let s = "Hello, world!";
+                for i in 0..s.len() {
+                    lcd.set_cursor(0, i as _).await?;
+                    lcd.write_str(&s[i..][..1]).await?;
+                }
+                PANIC_LINE.store(line!(), Ordering::Release);
+                Sleep::new(&mut alarm3, MillisDurationU32::from_ticks(500))?.await;
+                PANIC_LINE.store(line!(), Ordering::Release);
+            }
+        });
+        let r = x.await;
+        critical_section::with(|cs| match r {
+            Ok(never) => match never {},
+            Err(LcdWriteError::ScheduleAlarmError(alarm)) => {
+                if let Some((led1, led2, led3, led4, ..)) = &mut *PINS.borrow(cs).borrow_mut() {
+                    led1.set_high();
+                }
+            }
+            Err(LcdWriteError::WriteError(err)) => {
+                if let Some((led1, led2, led3, led4, ..)) = &mut *PINS.borrow(cs).borrow_mut() {
+                    led2.set_high();
+                }
+            }
+        });
+    });
+
     let mut alarm1 = timer.alarm_1().unwrap();
     runtime.spawn({
         async move {
@@ -596,10 +712,12 @@ fn real_main() -> ! {
                         .unwrap();
                 });
 
+                PANIC_LINE.store(line!(), Ordering::Release);
                 Sleep::new(&mut alarm1, MillisDurationU32::from_ticks(500))
                     .ok()
                     .unwrap()
                     .await;
+                PANIC_LINE.store(line!(), Ordering::Release);
 
                 critical_section::with(|cs| {
                     PANIC_LED
@@ -611,10 +729,12 @@ fn real_main() -> ! {
                         .unwrap();
                 });
 
+                PANIC_LINE.store(line!(), Ordering::Release);
                 Sleep::new(&mut alarm1, MillisDurationU32::from_ticks(500))
                     .ok()
                     .unwrap()
                     .await;
+                PANIC_LINE.store(line!(), Ordering::Release);
             }
         }
     });
@@ -654,16 +774,24 @@ fn real_main() -> ! {
                         beep_pwm.disable();
                         set_midi_note(note as isize + 69, beep_pwm);
                         beep_pwm.enable();
+                        PANIC_LINE.store(line!(), Ordering::Release);
                         Sleep::new(alarm, MillisDurationU32::from_ticks(time.into()))
                             .ok()
                             .unwrap()
                             .await;
+                        PANIC_LINE.store(line!(), Ordering::Release);
                     }),
                     Rest(time) => Box::pin(async move {
-                        Sleep::new(alarm, MillisDurationU32::from_ticks(time.into()))
-                            .ok()
-                            .unwrap()
-                            .await;
+                        beep_pwm.disable();
+                        PANIC_LINE.store(line!(), Ordering::Release);
+                        let a = Sleep::new(alarm, MillisDurationU32::from_ticks(time.into()));
+                        PANIC_LINE.store(line!(), Ordering::Release);
+                        let b = a.ok();
+                        PANIC_LINE.store(line!(), Ordering::Release);
+                        let c = b.unwrap();
+                        PANIC_LINE.store(line!(), Ordering::Release);
+                        let d = c.await;
+                        PANIC_LINE.store(line!(), Ordering::Release);
                         beep_pwm.enable();
                     }),
                 }
@@ -763,28 +891,28 @@ fn IO_IRQ_BANK0() {
     // via `GLOBAL_PINS`.
     if LEDS_AND_BUTTONS.is_none() {
         critical_section::with(|cs| {
-            *LEDS_AND_BUTTONS = PINS.borrow(cs).take();
-        });
-    }
-
-    if let Some((led1, led2, led3, led4, button1, button2, button3, button4)) = LEDS_AND_BUTTONS {
-        let mut set_leds = |value: u8| -> Result<(), _> {
-            led1.set(value & 8 != 0)?;
-            led2.set(value & 4 != 0)?;
-            led3.set(value & 2 != 0)?;
-            led4.set(value & 1 != 0)
-        };
-        fn handle_button<B: AnyPin>(button: &mut B, idx: usize, counter: &mut usize) {
-            let button = button.as_mut();
-            if button.interrupt_status(rp_pico::hal::gpio::Interrupt::EdgeLow) {
-                *counter = idx;
-                button.clear_interrupt(rp_pico::hal::gpio::Interrupt::EdgeLow);
+            if let Some((led1, led2, led3, led4, button1, button2, button3, button4)) =
+                &mut *PINS.borrow(cs).borrow_mut()
+            {
+                let mut set_leds = |value: u8| -> Result<(), _> {
+                    led1.set(value & 8 != 0)?;
+                    led2.set(value & 4 != 0)?;
+                    led3.set(value & 2 != 0)?;
+                    led4.set(value & 1 != 0)
+                };
+                fn handle_button<B: AnyPin>(button: &mut B, idx: usize, counter: &mut usize) {
+                    let button = button.as_mut();
+                    if button.interrupt_status(rp_pico::hal::gpio::Interrupt::EdgeLow) {
+                        *counter = idx;
+                        button.clear_interrupt(rp_pico::hal::gpio::Interrupt::EdgeLow);
+                    }
+                }
+                handle_button(button1, 1, COUNTER);
+                handle_button(button2, 2, COUNTER);
+                handle_button(button3, 3, COUNTER);
+                handle_button(button4, 4, COUNTER);
+                set_leds(*COUNTER as u8).unwrap();
             }
-        }
-        handle_button(button1, 1, COUNTER);
-        handle_button(button2, 2, COUNTER);
-        handle_button(button3, 3, COUNTER);
-        handle_button(button4, 4, COUNTER);
-        set_leds(*COUNTER as u8).unwrap();
+        });
     }
 }
