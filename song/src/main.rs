@@ -26,10 +26,7 @@ use board_support::{
     },
     pac::interrupt,
 };
-use core::{
-    arch::asm, cell::RefCell, convert::Infallible, future::Future, mem::MaybeUninit,
-    panic::PanicInfo,
-};
+use core::{arch::asm, cell::RefCell, future::Future, mem::MaybeUninit, panic::PanicInfo};
 use critical_section::Mutex;
 use embedded_hal::{digital::v2::OutputPin, PwmPin};
 use fugit::{MillisDurationU32, RateExtU32};
@@ -151,7 +148,7 @@ const SONG_1: &'static [(Note, &'static str)] = &[
     (Play(7, 250), "to"),
     (Play(4, 250), "the"),
     (Play(7, 750), "ball"),
-    (Play(2, 750), "game\n"),
+    (Play(2, 750), "game"),
 
     (Play(0, 250), "Take"),
     (Rest(250), ""),
@@ -159,7 +156,7 @@ const SONG_1: &'static [(Note, &'static str)] = &[
     (Play(9, 250), "out"),
     (Play(7, 250), "with"),
     (Play(4, 250), "the"),
-    (Play(7, 750), "crowd\n"),
+    (Play(7, 750), "crowd"),
     (Rest(750), ""),
 
     (Play(9, 250), "Buy"),
@@ -183,7 +180,7 @@ const SONG_1: &'static [(Note, &'static str)] = &[
     (Play(14, 250), "ev-"),
     (Play(11, 250), "er"),
     (Play(9, 250), "get"),
-    (Play(7, 250), "back\n"),
+    (Play(7, 250), "back"),
     (Play(4, 250), "Let"),
     (Play(2, 250), "me"),
 
@@ -194,7 +191,7 @@ const SONG_1: &'static [(Note, &'static str)] = &[
     (Play(7, 250), "for"),
     (Play(4, 250), "the"),
     (Play(7, 750), "home"),
-    (Play(2, 750), "team\n"),
+    (Play(2, 750), "team"),
 
     (Play(0, 250), "If"),
     (Play(0, 250), "they"),
@@ -202,7 +199,7 @@ const SONG_1: &'static [(Note, &'static str)] = &[
     (Play(4, 250), "win"),
     (Play(5, 250), "it's"),
     (Play(7, 250), "a"),
-    (Play(9, 1000), "shame\n"),
+    (Play(9, 1000), "shame"),
     (Play(9, 250), "For"),
     (Play(11, 250), "it's"),
 
@@ -219,7 +216,7 @@ const SONG_1: &'static [(Note, &'static str)] = &[
 
     (Play(9, 750), "old"),
     (Play(11, 750), "ball"),
-    (Play(12, 750), "game"),
+    (Play(12, 750), "game!"),
     (Rest(750), ""),
 ];
 
@@ -502,8 +499,8 @@ fn real_main() -> ! {
         )));
     });
 
-    let min_top = unsafe { MIDI_NOTES.iter() }
-        .fold(0xffff_u16, |curtop, (_int, _frac, top)| curtop.min(*top));
+    // let min_top = unsafe { MIDI_NOTES.iter() }
+    //     .fold(0xffff_u16, |curtop, (_int, _frac, top)| curtop.min(*top));
 
     // Unmask the IO_BANK0 IRQ so that the NVIC interrupt controller
     // will jump to the interrupt function when the interrupt occurs.
@@ -548,41 +545,50 @@ fn real_main() -> ! {
 
     let mut alarm3 = timer.alarm_3().unwrap();
 
+    let (lyric_sender, lyric_receiver) = async_utils::capacity_1_channel::<&str>();
+
     runtime.spawn(async move {
-        let x: StdPin<
-            Box<dyn Future<Output = Result<Infallible, LcdWriteError<i2c_pio::Error>>> + Send>,
-        > = Box::pin(async move {
-            let mut i2c = I2C::new(
-                &mut pio,
-                pins.gpio8,
-                pins.gpio9,
-                sm0,
-                fugit::RateExtU32::kHz(100),
-                clocks.system_clock.freq(),
-            );
-            let mut lcd = Lcd::new(&mut i2c)
-                .rows(2)
-                .cursor_on(true)
-                .address(0x27)
-                .init(&mut alarm3)
-                .await?;
+        let x: StdPin<Box<dyn Future<Output = Result<(), LcdWriteError<i2c_pio::Error>>> + Send>> =
+            Box::pin(async move {
+                let mut i2c = I2C::new(
+                    &mut pio,
+                    pins.gpio8,
+                    pins.gpio9,
+                    sm0,
+                    fugit::RateExtU32::kHz(100),
+                    clocks.system_clock.freq(),
+                );
+                let mut lcd = Lcd::new(&mut i2c)
+                    .rows(2)
+                    .cursor_on(true)
+                    .address(0x27)
+                    .init(&mut alarm3)
+                    .await?;
 
-            loop {
-                lcd.clear(&mut alarm3).await?;
-                lcd.write_str("Hello, world!", &mut alarm3).await?;
+                while let Ok(lyric) = lyric_receiver.recv().await {
+                    lcd.clear(&mut alarm3).await?;
+                    // lcd.set_cursor(0, 0, &mut alarm3).await?;
+                    lcd.write_str(lyric, &mut alarm3).await?;
+                }
 
-                let s = format!("min_top: {}", min_top);
+                Ok(())
 
-                lcd.set_cursor(1, 0, &mut alarm3).await?;
+                // loop {
+                //     lcd.clear(&mut alarm3).await?;
+                //     lcd.write_str("Hello, world!", &mut alarm3).await?;
 
-                lcd.write_str(&s, &mut alarm3).await?;
+                //     let s = format!("min_top: {}", min_top);
 
-                Sleep::new(&mut alarm3, MillisDurationU32::from_ticks(500000))?.await;
-            }
-        });
+                //     lcd.set_cursor(1, 0, &mut alarm3).await?;
+
+                //     lcd.write_str(&s, &mut alarm3).await?;
+
+                //     Sleep::new(&mut alarm3, MillisDurationU32::from_ticks(500000))?.await;
+                // }
+            });
         let r = x.await;
         critical_section::with(|cs| match r {
-            Ok(never) => match never {},
+            Ok(..) => {}
             Err(LcdWriteError::ScheduleAlarmError(_alarm)) => {
                 if let Some((led1, _led2, _led3, _led4, ..)) = &mut *PINS.borrow_ref_mut(cs) {
                     let _ = led1.set_high();
@@ -663,7 +669,8 @@ fn real_main() -> ! {
                 }
             }
 
-            for &(note, _lyric) in SONG_1 {
+            for &(note, lyric) in SONG_1 {
+                let _ = lyric_sender.try_send(lyric);
                 play_note(note, &mut beep_pwm, &mut alarm0).await;
             }
         })

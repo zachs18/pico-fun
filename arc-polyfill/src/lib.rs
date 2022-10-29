@@ -69,6 +69,21 @@ impl<T> Arc<T> {
 }
 
 impl<T: ?Sized> Arc<T> {
+    /// Gets the number of strong (`Arc`) pointers to this allocation.
+    ///
+    /// # Safety
+    ///
+    /// This method by itself is safe, but using it correctly requires extra care.
+    /// Another thread can change the strong count,
+    /// including potentially between calling this method and acting on the result.
+    #[inline]
+    #[must_use]
+    pub fn strong_count(this: &Self) -> usize {
+        unsafe { &*this.data.as_ptr() }
+            .strong
+            .load(Ordering::Acquire)
+    }
+
     pub fn as_ptr(this: &Self) -> *const T {
         let ptr: *mut ArcInner<T> = this.data.as_ptr();
         unsafe { core::ptr::addr_of_mut!((*ptr).data) }
