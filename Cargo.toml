@@ -8,6 +8,7 @@ members = [
 exclude = [
     "rp-hal",
     "critical-section",
+    "generate-midi-notes",
 ]
 
 # cargo build/run

@@ -26,12 +26,20 @@ use board_support::{
     },
     pac::interrupt,
 };
-use core::{arch::asm, cell::RefCell, future::Future, mem::MaybeUninit, panic::PanicInfo};
+use core::{
+    arch::asm,
+    cell::RefCell,
+    future::Future,
+    mem::MaybeUninit,
+    panic::PanicInfo,
+    sync::atomic::{AtomicU32, Ordering},
+};
 use critical_section::Mutex;
 use embedded_hal::{digital::v2::OutputPin, PwmPin};
 use fugit::{MillisDurationU32, RateExtU32};
 use i2c_pio::I2C;
 use lcd::Lcd;
+use midi_notes::MIDI_NOTES;
 use rp_pico as board_support;
 use usb_device::{
     class_prelude::UsbBusAllocator,
@@ -44,31 +52,7 @@ pub mod async_utils;
 pub mod hal_exts;
 pub mod lcd;
 pub mod max7219;
-
-const CLOCK_FREQ: u32 = 125_000_000u32;
-
-const fn clkdiv_and_top_for_freq(freq_int: u32, _freq_frac: u32) -> (u8, u8, u16) {
-    // if freq_int < 7 || freq_int == 7 && freq_frac <=
-    if freq_int <= 7 {
-        return (255, 15, 65535);
-    } else if freq_int >= CLOCK_FREQ {
-        return (0, 1, 1);
-    }
-
-    let count = CLOCK_FREQ / freq_int;
-    if count < 65535 {
-        return (1, 0, count as u16);
-    }
-    let (count, _rem) = (count / 16, count % 16);
-    if count < 65535 {
-        return (16, 0, count as u16);
-    }
-
-    (1, 0, 65535)
-}
-
-// TODO: pre-generate this and include!() it as a non-mut static.
-static mut MIDI_NOTES: [(u8, u8, u16); 128] = [(0, 0, 0); 128];
+mod midi_notes;
 
 #[derive(Clone, Copy)]
 enum Note {
@@ -349,13 +333,20 @@ type ButtonsAndLeds = (
 
 static PINS: Mutex<RefCell<Option<ButtonsAndLeds>>> = Mutex::new(RefCell::new(None));
 
+/// Shift `top` down by this much to get the duty
+/// Default: 0xffff -> 0x007f = shift of 9 bits
+static DUTY_SHIFT: AtomicU32 = AtomicU32::new(9);
+
 /// `beep_pwm` should be disabled before calling this.
 /// `note` should be in `[0, 127]`
 fn set_midi_note(note: isize, beep_pwm: &mut Slice<Pwm1, FreeRunning>) {
-    let (div_int, div_frac, top) = unsafe { MIDI_NOTES[note as usize] };
+    let (div_int, div_frac, top) = MIDI_NOTES[note as usize];
     beep_pwm.set_div_int(div_int);
     beep_pwm.set_div_frac(div_frac);
     beep_pwm.set_top(top);
+    beep_pwm
+        .channel_a
+        .set_duty(top >> DUTY_SHIFT.load(Ordering::Relaxed));
 }
 
 fn play_note<'a, Alarm: AlarmExt + 'static>(
@@ -393,17 +384,6 @@ fn real_main() -> ! {
     let _core = pac::CorePeripherals::take().unwrap();
     let mut watchdog = Watchdog::new(pac.WATCHDOG);
     let sio = Sio::new(pac.SIO);
-
-    for i in 0..128 {
-        let half_steps_from_a4 = i as i32 - 69;
-        let freq = 444.0 * libm::powf(2.0_f32, half_steps_from_a4 as f32 / 12.0);
-        let freq_int = freq as u32;
-        // let freq_frac = (freq - freq_int as f32)
-        // SAFETY: single-core program currently.
-        unsafe {
-            MIDI_NOTES[i] = clkdiv_and_top_for_freq(freq_int, 0);
-        }
-    }
 
     // External high-speed crystal on the pico board is 12Mhz
     let clocks = init_clocks_and_plls(
@@ -485,7 +465,7 @@ fn real_main() -> ! {
 
     let _channel_pin_a = beep_pwm.channel_a.output_to(beep_pin);
 
-    beep_pwm.channel_a.set_duty(0x0090);
+    beep_pwm.channel_a.set_duty(0x0080);
     beep_pwm.channel_a.enable();
 
     // These are implicitly used by the spi driver if they are in the correct mode
@@ -758,35 +738,56 @@ unsafe fn USBCTRL_IRQ() {
 #[interrupt]
 fn IO_IRQ_BANK0() {
     // The `#[interrupt]` attribute covertly converts this to `&'static mut Option<LedAndButton>`
-    static mut LEDS_AND_BUTTONS: Option<ButtonsAndLeds> = None;
     static mut COUNTER: usize = 1;
 
-    // This is one-time lazy initialisation. We steal the variables given to us
-    // via `GLOBAL_PINS`.
-    if LEDS_AND_BUTTONS.is_none() {
-        critical_section::with(|cs| {
-            if let Some((led1, led2, led3, led4, button1, button2, button3, button4)) =
-                &mut *PINS.borrow_ref_mut(cs)
-            {
-                let mut set_leds = |value: u8| -> Result<(), _> {
-                    led1.set(value & 8 != 0)?;
-                    led2.set(value & 4 != 0)?;
-                    led3.set(value & 2 != 0)?;
-                    led4.set(value & 1 != 0)
-                };
-                fn handle_button<B: AnyPin>(button: &mut B, idx: usize, counter: &mut usize) {
-                    let button = button.as_mut();
-                    if button.interrupt_status(rp_pico::hal::gpio::Interrupt::EdgeLow) {
-                        *counter = idx;
-                        button.clear_interrupt(rp_pico::hal::gpio::Interrupt::EdgeLow);
+    critical_section::with(|cs| {
+        if let Some((led1, led2, led3, led4, button1, button2, button3, button4)) =
+            &mut *PINS.borrow_ref_mut(cs)
+        {
+            let mut set_leds = |value: u8| -> Result<(), _> {
+                led1.set(value & 8 != 0)?;
+                led2.set(value & 4 != 0)?;
+                led3.set(value & 2 != 0)?;
+                led4.set(value & 1 != 0)
+            };
+            fn handle_button<B: AnyPin>(
+                button: &mut B,
+                idx: usize,
+                counter: &mut usize,
+                addl: Option<impl FnOnce()>,
+            ) {
+                let button = button.as_mut();
+                if button.interrupt_status(rp_pico::hal::gpio::Interrupt::EdgeLow) {
+                    *counter = idx;
+                    button.clear_interrupt(rp_pico::hal::gpio::Interrupt::EdgeLow);
+                    if let Some(addl) = addl {
+                        addl();
                     }
                 }
-                handle_button(button1, 1, COUNTER);
-                handle_button(button2, 2, COUNTER);
-                handle_button(button3, 3, COUNTER);
-                handle_button(button4, 4, COUNTER);
-                set_leds(*COUNTER as u8).unwrap();
             }
-        });
-    }
+            handle_button(
+                button1,
+                1,
+                COUNTER,
+                Some(|| {
+                    let old_value = DUTY_SHIFT.load(Ordering::Relaxed);
+                    let new_value = (old_value + 1).min(11);
+                    DUTY_SHIFT.store(new_value, Ordering::Relaxed);
+                }),
+            );
+            handle_button(button2, 2, COUNTER, None::<fn()>);
+            handle_button(button3, 3, COUNTER, None::<fn()>);
+            handle_button(
+                button4,
+                4,
+                COUNTER,
+                Some(|| {
+                    let old_value = DUTY_SHIFT.load(Ordering::Relaxed);
+                    let new_value = (old_value - 1).max(4);
+                    DUTY_SHIFT.store(new_value, Ordering::Relaxed);
+                }),
+            );
+            set_leds(*COUNTER as u8).unwrap();
+        }
+    });
 }
