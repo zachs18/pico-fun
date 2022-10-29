@@ -9,7 +9,7 @@ use crate::{
     hal_exts::{AlarmExt, OutputPinExt},
     lcd::LcdWriteError,
 };
-use alloc::{boxed::Box, format};
+use alloc::boxed::Box;
 use async_utils::{Runtime, StdPin};
 use board_support::{
     entry,
@@ -67,6 +67,7 @@ const fn clkdiv_and_top_for_freq(freq_int: u32, _freq_frac: u32) -> (u8, u8, u16
     (1, 0, 65535)
 }
 
+// TODO: pre-generate this and include!() it as a non-mut static.
 static mut MIDI_NOTES: [(u8, u8, u16); 128] = [(0, 0, 0); 128];
 
 #[derive(Clone, Copy)]
@@ -348,6 +349,44 @@ type ButtonsAndLeds = (
 
 static PINS: Mutex<RefCell<Option<ButtonsAndLeds>>> = Mutex::new(RefCell::new(None));
 
+/// `beep_pwm` should be disabled before calling this.
+/// `note` should be in `[0, 127]`
+fn set_midi_note(note: isize, beep_pwm: &mut Slice<Pwm1, FreeRunning>) {
+    let (div_int, div_frac, top) = unsafe { MIDI_NOTES[note as usize] };
+    beep_pwm.set_div_int(div_int);
+    beep_pwm.set_div_frac(div_frac);
+    beep_pwm.set_top(top);
+}
+
+fn play_note<'a, Alarm: AlarmExt + 'static>(
+    note: Note,
+    beep_pwm: &'a mut Slice<Pwm1, FreeRunning>,
+    alarm: &'a mut Alarm,
+) -> impl Future<Output = ()> + 'a {
+    async move {
+        match note {
+            Play(note, time) => {
+                beep_pwm.disable(); // This may fix the occasional screeching? (it doesn't)
+                set_midi_note(note as isize + 69, beep_pwm);
+                beep_pwm.enable();
+
+                Sleep::new(alarm, MillisDurationU32::from_ticks(time.into()))
+                    .ok()
+                    .unwrap()
+                    .await;
+            }
+            Rest(time) => {
+                beep_pwm.disable();
+                Sleep::new(alarm, MillisDurationU32::from_ticks(time.into()))
+                    .ok()
+                    .unwrap()
+                    .await;
+                beep_pwm.enable();
+            }
+        }
+    }
+}
+
 fn real_main() -> ! {
     // defmt::info!("Program start");
     let mut pac = pac::Peripherals::take().unwrap();
@@ -463,17 +502,6 @@ fn real_main() -> ! {
         10_u32.MHz(),
         &embedded_hal::spi::MODE_0,
     );
-
-    fn set_midi_note(note: isize, beep_pwm: &mut Slice<Pwm1, FreeRunning>) {
-        // let mut set_midi_note = |note: isize| {
-        let (div_int, div_frac, top) = unsafe { MIDI_NOTES[note as usize] };
-        beep_pwm.disable(); // This may fix the occasional screeching?
-        beep_pwm.set_div_int(div_int);
-        beep_pwm.set_div_frac(div_frac);
-        beep_pwm.set_top(top);
-        beep_pwm.enable();
-        // };
-    }
 
     let (mut pio, sm0, _a, _b, _c) = pac.PIO0.split(&mut pac.RESETS);
 
@@ -642,33 +670,6 @@ fn real_main() -> ! {
     let mut alarm0 = timer.alarm_0().unwrap();
     loop {
         runtime.block_on(async {
-            fn play_note<'a, Alarm: AlarmExt + 'static>(
-                note: Note,
-                beep_pwm: &'a mut Slice<Pwm1, FreeRunning>,
-                alarm: &'a mut Alarm,
-            ) -> StdPin<Box<dyn Future<Output = ()> + 'a>> {
-                match note {
-                    Play(note, time) => Box::pin(async move {
-                        beep_pwm.disable();
-                        set_midi_note(note as isize + 69, beep_pwm);
-                        beep_pwm.enable();
-
-                        Sleep::new(alarm, MillisDurationU32::from_ticks(time.into()))
-                            .ok()
-                            .unwrap()
-                            .await;
-                    }),
-                    Rest(time) => Box::pin(async move {
-                        beep_pwm.disable();
-                        Sleep::new(alarm, MillisDurationU32::from_ticks(time.into()))
-                            .ok()
-                            .unwrap()
-                            .await;
-                        beep_pwm.enable();
-                    }),
-                }
-            }
-
             for &(note, lyric) in SONG_1 {
                 let _ = lyric_sender.try_send(lyric);
                 play_note(note, &mut beep_pwm, &mut alarm0).await;
