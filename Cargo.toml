@@ -3,6 +3,7 @@ members = [
     "first",
     "song",
     "rp2040-project-template",
+    "arc-polyfill",
 ]
 exclude = [
     "rp-hal",

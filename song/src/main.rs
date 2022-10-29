@@ -4,64 +4,47 @@
 #![no_main]
 extern crate alloc;
 
-use core::{
-    arch::asm,
-    cell::RefCell,
-    convert::Infallible,
-    mem::MaybeUninit,
-    panic::PanicInfo,
-    sync::atomic::{AtomicU32, AtomicUsize, Ordering},
+use crate::{
+    async_utils::Sleep,
+    hal_exts::{AlarmExt, OutputPinExt},
+    lcd::LcdWriteError,
 };
-
-use alloc::boxed::Box;
+use alloc::{boxed::Box, format};
 use async_utils::{Runtime, StdPin};
-use critical_section::Mutex;
-use fugit::MillisDurationU32;
-use futures::Future;
-use i2c_pio::I2C;
-use lcd::Lcd;
-// Provide an alias for our BSP so we can switch targets quickly.
-// Uncomment the BSP you included in Cargo.toml, the rest of the code does not need to change.
-use rp_pico as bsp;
-// use sparkfun_pro_micro_rp2040 as bsp;
-
-use bsp::{
+use board_support::{
     entry,
     hal::{
+        self,
         clocks::{init_clocks_and_plls, Clock},
         gpio::{bank0::*, AnyPin, FunctionPwm, Input, Output, Pin, PullUp, PushPull},
         pac,
-        pio::SM0,
-        prelude::_rphal_pio_PIOExt,
+        prelude::*,
         pwm::{FreeRunning, Pwm1, Slice, Slices},
         sio::Sio,
-        timer::Alarm2,
         watchdog::Watchdog,
         Timer,
     },
-    pac::{interrupt, PIO0},
+    pac::interrupt,
 };
-
+use core::{arch::asm, cell::RefCell, convert::Infallible, mem::MaybeUninit, panic::PanicInfo};
+use critical_section::Mutex;
 use embedded_hal::{digital::v2::OutputPin, PwmPin};
+use fugit::{MillisDurationU32, RateExtU32};
+use futures::Future;
+use i2c_pio::I2C;
+use lcd::Lcd;
+use rp_pico as board_support;
+use usb_device::{
+    class_prelude::UsbBusAllocator,
+    prelude::{UsbDevice, UsbDeviceBuilder, UsbVidPid},
+};
+use usbd_serial::SerialPort;
 
 pub mod alloc_utils;
 pub mod async_utils;
 pub mod hal_exts;
-mod lcd;
-
-/// I fully understand why `set_state` takes a `PinState` and not a `bool`, but it's annoying so I did this.
-trait OutputPinExt: OutputPin {
-    fn set(&mut self, high: bool) -> Result<(), Self::Error>;
-}
-
-impl<P: OutputPin + ?Sized> OutputPinExt for P {
-    fn set(&mut self, high: bool) -> Result<(), Self::Error> {
-        match high {
-            false => self.set_low(),
-            true => self.set_high(),
-        }
-    }
-}
+pub mod lcd;
+pub mod max7219;
 
 const CLOCK_FREQ: u32 = 125_000_000u32;
 
@@ -92,34 +75,19 @@ enum Note {
     Play(i8, u16),
     Rest(u16),
 }
-
-use usb_device::{
-    class_prelude::UsbBusAllocator,
-    prelude::{UsbDevice, UsbDeviceBuilder, UsbVidPid},
-};
 use Note::*;
-// USB Communications Class Device support
-use usbd_serial::SerialPort;
-
-use crate::{alloc_utils::Arc, async_utils::Sleep, hal_exts::AlarmExt, lcd::LcdWriteError};
 
 /// The USB Device Driver (shared with the interrupt).
-static mut USB_DEVICE: Option<UsbDevice<bsp::hal::usb::UsbBus>> = None;
+static mut USB_DEVICE: Option<UsbDevice<board_support::hal::usb::UsbBus>> = None;
 
 /// The USB Bus Driver (shared with the interrupt).
-static mut USB_BUS: Option<UsbBusAllocator<bsp::hal::usb::UsbBus>> = None;
+static mut USB_BUS: Option<UsbBusAllocator<board_support::hal::usb::UsbBus>> = None;
 
 /// The USB Serial Device Driver (shared with the interrupt).
-static mut USB_SERIAL: Option<SerialPort<bsp::hal::usb::UsbBus>> = None;
+static mut USB_SERIAL: Option<SerialPort<board_support::hal::usb::UsbBus>> = None;
 
 static PANIC_LED: Mutex<RefCell<Option<Pin<Gpio25, Output<PushPull>>>>> =
     Mutex::new(RefCell::new(None));
-static PANIC_LINE: AtomicU32 = AtomicU32::new(0);
-static MEM_FREE: AtomicUsize = AtomicUsize::new(0);
-
-static PANIC_LCD_BAD_UNSAFE: Mutex<
-    RefCell<Option<Lcd<'static, I2C<PIO0, (PIO0, SM0), Gpio8, Gpio9>, Alarm2>>>,
-> = Mutex::new(RefCell::new(None));
 
 fn noploop(count: usize) {
     for _ in 0..count {
@@ -134,7 +102,7 @@ fn panic_led(info: &PanicInfo) -> ! {
     critical_section::with(|cs| {
         let mut led = PANIC_LED.borrow(cs).borrow_mut();
         let mut leds = PINS.borrow(cs).borrow_mut();
-        let (file, line) = info
+        let (_file, line) = info
             .location()
             .map(|loc| (loc.file(), loc.line()))
             .unwrap_or(("", 0));
@@ -149,43 +117,6 @@ fn panic_led(info: &PanicInfo) -> ! {
                 for chunk in (0..8).rev() {
                     let chunk = line >> (chunk * 4);
                     let _ = set_leds(chunk as u8);
-                    noploop(2097152);
-                    let _ = set_leds(0);
-                    noploop(2097152);
-                }
-                let _ = led.set_high();
-                noploop(1048576);
-                let _ = led.set_low();
-                noploop(1048576);
-
-                let line = PANIC_LINE.load(Ordering::Acquire);
-                for chunk in (0..8).rev() {
-                    let chunk = line >> (chunk * 4);
-                    let _ = set_leds(chunk as u8);
-                    noploop(2097152);
-                    let _ = set_leds(0);
-                    noploop(2097152);
-                }
-                let _ = led.set_high();
-                noploop(1048576);
-                let _ = led.set_low();
-                noploop(1048576);
-
-                let bytes = MEM_FREE.load(Ordering::Acquire);
-                for chunk in (0..8).rev() {
-                    let chunk = bytes >> (chunk * 4);
-                    let _ = set_leds(chunk as u8);
-                    noploop(2097152);
-                    let _ = set_leds(0);
-                    noploop(2097152);
-                }
-                let _ = led.set_high();
-                noploop(1048576);
-                let _ = led.set_low();
-                noploop(1048576);
-
-                for c in file.chars() {
-                    let _ = set_leds(c as u8);
                     noploop(2097152);
                     let _ = set_leds(0);
                     noploop(2097152);
@@ -421,7 +352,7 @@ static PINS: Mutex<RefCell<Option<ButtonsAndLeds>>> = Mutex::new(RefCell::new(No
 fn real_main() -> ! {
     // defmt::info!("Program start");
     let mut pac = pac::Peripherals::take().unwrap();
-    let core = pac::CorePeripherals::take().unwrap();
+    let _core = pac::CorePeripherals::take().unwrap();
     let mut watchdog = Watchdog::new(pac.WATCHDOG);
     let sio = Sio::new(pac.SIO);
 
@@ -449,7 +380,7 @@ fn real_main() -> ! {
     .ok()
     .unwrap();
 
-    let pins = bsp::Pins::new(
+    let pins = board_support::Pins::new(
         pac.IO_BANK0,
         pac.PADS_BANK0,
         sio.gpio_bank0,
@@ -457,7 +388,7 @@ fn real_main() -> ! {
     );
 
     // https://github.com/rp-rs/rp-hal/blob/HEAD/boards/rp-pico/examples/pico_usb_serial.rs
-    let usb_bus = UsbBusAllocator::new(bsp::hal::usb::UsbBus::new(
+    let usb_bus = UsbBusAllocator::new(board_support::hal::usb::UsbBus::new(
         pac.USBCTRL_REGS,
         pac.USBCTRL_DPRAM,
         clocks.usb_clock,
@@ -492,7 +423,7 @@ fn real_main() -> ! {
     drop(bus_ref);
     // Enable the USB interrupt
     unsafe {
-        pac::NVIC::unmask(bsp::hal::pac::Interrupt::USBCTRL_IRQ);
+        pac::NVIC::unmask(board_support::hal::pac::Interrupt::USBCTRL_IRQ);
     };
 
     let pwm_slices = Slices::new(pac.PWM, &mut pac.RESETS);
@@ -516,15 +447,23 @@ fn real_main() -> ! {
 
     let _channel_pin_a = beep_pwm.channel_a.output_to(beep_pin);
 
-    beep_pwm.channel_a.set_duty(0x0050);
+    beep_pwm.channel_a.set_duty(0x0090);
     beep_pwm.channel_a.enable();
 
-    // let set_freq = |freq| {
-    //     let (div_int, div_frac, top) = clkdiv_and_top_for_freq(freq, 0);
-    //     beep_pwm.set_div_int(div_int);
-    //     beep_pwm.set_div_frac(div_frac);
-    //     beep_pwm.set_top(top);
-    // };
+    // These are implicitly used by the spi driver if they are in the correct mode
+    let _spi_sclk = pins.gpio6.into_mode::<hal::gpio::FunctionSpi>();
+    let _spi_mosi = pins.gpio7.into_mode::<hal::gpio::FunctionSpi>();
+    // let _spi_miso = pins.gpio4.into_mode::<hal::gpio::FunctionSpi>();
+    let mut spi_cs = pins.gpio1.into_push_pull_output();
+    let spi = hal::Spi::<_, _, 8>::new(pac.SPI0);
+
+    // Exchange the uninitialised SPI driver for an initialised one
+    let mut spi = spi.init(
+        &mut pac.RESETS,
+        clocks.peripheral_clock.freq(),
+        10_u32.MHz(),
+        &embedded_hal::spi::MODE_0,
+    );
 
     fn set_midi_note(note: isize, beep_pwm: &mut Slice<Pwm1, FreeRunning>) {
         // let mut set_midi_note = |note: isize| {
@@ -537,52 +476,7 @@ fn real_main() -> ! {
         // };
     }
 
-    // let mut play_note = {
-    //     let delay: &mut dyn DelayMs<u16> = &mut delay;
-    //     move |note: &Note| match note {
-    //         &Play(note, time) => {
-    //             set_midi_note(note as isize + 69, &mut beep_pwm);
-    //             delay.delay_ms(time);
-    //         }
-    //         &Rest(time) => {
-    //             beep_pwm.disable();
-    //             delay.delay_ms(time);
-    //             beep_pwm.enable();
-    //         }
-    //     }
-    // };
-
     let (mut pio, sm0, _a, _b, _c) = pac.PIO0.split(&mut pac.RESETS);
-
-    #[cfg(any())]
-    let write = Arc::new(move |file: &str, line: u32| {
-        critical_section::with(|cs| {
-            let mut lcd = lcd.borrow(cs).borrow_mut();
-            // ASCII only
-            lcd.clear().unwrap();
-            for i in 0..file.len() {
-                lcd.set_cursor(0, i as _).unwrap();
-                lcd.write_str(&file[i..][..1]).unwrap();
-            }
-            let line = format!("{}", line);
-            for i in 0..line.len() {
-                lcd.set_cursor(1, i as _).unwrap();
-                lcd.write_str(&line[i..][..1]).unwrap();
-            }
-            lcd.set_cursor(1, 10).unwrap();
-            lcd.write_str("buf").unwrap();
-        })
-    });
-    // let write = Arc::new(|_: &str, _| ());
-
-    // write("Hello, world!", 666);
-
-    // let mut set_leds = |value: u8| -> Result<(), _> {
-    //     led1_pin.set(value & 8 != 0)?;
-    //     led2_pin.set(value & 4 != 0)?;
-    //     led3_pin.set(value & 2 != 0)?;
-    //     led4_pin.set(value & 1 != 0)
-    // };
 
     let button1_pin = pins.gpio2.into_pull_up_input();
     let button2_pin = pins.gpio3.into_pull_up_input();
@@ -606,6 +500,9 @@ fn real_main() -> ! {
         )));
     });
 
+    let min_top = unsafe { MIDI_NOTES.iter() }
+        .fold(0xffff_u16, |curtop, (_int, _frac, top)| curtop.min(*top));
+
     // Unmask the IO_BANK0 IRQ so that the NVIC interrupt controller
     // will jump to the interrupt function when the interrupt occurs.
     // We do this last so that the interrupt can't go off while
@@ -613,43 +510,47 @@ fn real_main() -> ! {
     unsafe {
         pac::NVIC::unmask(pac::Interrupt::IO_IRQ_BANK0);
     }
-    #[cfg(any())]
-    {
-        let timer = Timer::new(pac.TIMER, &mut pac.RESETS);
-        let mut count_down = timer.count_down();
-        // Create a count_down timer for 500 milliseconds
-        main_led_pin.set_high();
-        count_down.start(500_u32.millis());
-        // Block until timer has elapsed
-        let _ = nb::block!(count_down.wait());
-        main_led_pin.set_low();
-        // Restart the count_down timer with a period of 100 milliseconds
-        count_down.start(100_u32.millis());
-        // Cancel it immediately
-        count_down.cancel();
-
-        let mut beep_pin = _channel_pin_a.into_mode::<Output<PushPull>>();
-        beep_pin.set_high();
-        count_down.start(500_u32.millis());
-        // Block until timer has elapsed
-        let _ = nb::block!(count_down.wait());
-        beep_pin.set_low();
-
-        loop {
-            cortex_m::asm::wfi();
-        }
-    }
     let mut runtime = Runtime::new(/* core.SYST, clocks.system_clock.freq().to_Hz() */);
 
     let mut timer = Timer::new(pac.TIMER, &mut pac.RESETS);
     let mut alarm2 = timer.alarm_2().unwrap();
+
+    // critical_section::with(|cs| {
+    //     let spi = unsafe {
+    //         static mut TEMP_SPI: Option<Spi<Enabled, pac::SPI0, 8>> = None;
+    //         TEMP_SPI = Some(spi);
+    //         TEMP_SPI.as_mut().unwrap()
+    //     };
+    //     let spi_cs = unsafe {
+    //         static mut TEMP_SPI_CS: Option<Pin<Gpio1, Output<PushPull>>> = None;
+    //         TEMP_SPI_CS = Some(spi_cs);
+    //         TEMP_SPI_CS.as_mut().unwrap()
+    //     };
+    //     let mut max7219 = max7219::Max7219::new(spi, Some(spi_cs), 1).unwrap();
+    // });
+
+    runtime.spawn(async move {
+        let mut counter = 0_u64;
+
+        let mut max7219 = max7219::Max7219::<_, _, 1>::new(&mut spi, Some(&mut spi_cs)).unwrap();
+        loop {
+            Sleep::new(&mut alarm2, MillisDurationU32::from_ticks(100))
+                .unwrap()
+                .await;
+
+            max7219.show(bytemuck::cast_ref(&counter)).unwrap();
+
+            counter += 1;
+        }
+    });
+
     let mut alarm3 = timer.alarm_3().unwrap();
 
     runtime.spawn(async move {
         let x: StdPin<
             Box<dyn Future<Output = Result<Infallible, LcdWriteError<i2c_pio::Error>>> + Send>,
         > = Box::pin(async move {
-            let mut i2c = i2c_pio::I2C::new(
+            let mut i2c = I2C::new(
                 &mut pio,
                 pins.gpio8,
                 pins.gpio9,
@@ -657,42 +558,37 @@ fn real_main() -> ! {
                 fugit::RateExtU32::kHz(100),
                 clocks.system_clock.freq(),
             );
-            let mut lcd = lcd::Lcd::new(&mut i2c, &mut alarm2)
+            let mut lcd = Lcd::new(&mut i2c)
                 .rows(2)
                 .cursor_on(true)
                 .address(0x27)
-                .init()
+                .init(&mut alarm3)
                 .await?;
 
             loop {
-                lcd.clear().await?;
-                lcd.write_str("Hello, world!").await?;
-                PANIC_LINE.store(line!(), Ordering::Release);
-                Sleep::new(&mut alarm3, MillisDurationU32::from_ticks(500))?.await;
-                PANIC_LINE.store(line!(), Ordering::Release);
+                lcd.clear(&mut alarm3).await?;
+                lcd.write_str("Hello, world!", &mut alarm3).await?;
 
-                lcd.clear().await?;
-                let s = "Hello, world!";
-                for i in 0..s.len() {
-                    lcd.set_cursor(0, i as _).await?;
-                    lcd.write_str(&s[i..][..1]).await?;
-                }
-                PANIC_LINE.store(line!(), Ordering::Release);
-                Sleep::new(&mut alarm3, MillisDurationU32::from_ticks(500))?.await;
-                PANIC_LINE.store(line!(), Ordering::Release);
+                let s = format!("min_top: {}", min_top);
+
+                lcd.set_cursor(1, 0, &mut alarm3).await?;
+
+                lcd.write_str(&s, &mut alarm3).await?;
+
+                Sleep::new(&mut alarm3, MillisDurationU32::from_ticks(500000))?.await;
             }
         });
         let r = x.await;
         critical_section::with(|cs| match r {
             Ok(never) => match never {},
-            Err(LcdWriteError::ScheduleAlarmError(alarm)) => {
-                if let Some((led1, led2, led3, led4, ..)) = &mut *PINS.borrow(cs).borrow_mut() {
-                    led1.set_high();
+            Err(LcdWriteError::ScheduleAlarmError(_alarm)) => {
+                if let Some((led1, _led2, _led3, _led4, ..)) = &mut *PINS.borrow(cs).borrow_mut() {
+                    let _ = led1.set_high();
                 }
             }
-            Err(LcdWriteError::WriteError(err)) => {
-                if let Some((led1, led2, led3, led4, ..)) = &mut *PINS.borrow(cs).borrow_mut() {
-                    led2.set_high();
+            Err(LcdWriteError::WriteError(_err)) => {
+                if let Some((_led1, led2, _led3, _led4, ..)) = &mut *PINS.borrow(cs).borrow_mut() {
+                    let _ = led2.set_high();
                 }
             }
         });
@@ -712,12 +608,10 @@ fn real_main() -> ! {
                         .unwrap();
                 });
 
-                PANIC_LINE.store(line!(), Ordering::Release);
                 Sleep::new(&mut alarm1, MillisDurationU32::from_ticks(500))
                     .ok()
                     .unwrap()
                     .await;
-                PANIC_LINE.store(line!(), Ordering::Release);
 
                 critical_section::with(|cs| {
                     PANIC_LED
@@ -729,12 +623,10 @@ fn real_main() -> ! {
                         .unwrap();
                 });
 
-                PANIC_LINE.store(line!(), Ordering::Release);
                 Sleep::new(&mut alarm1, MillisDurationU32::from_ticks(500))
                     .ok()
                     .unwrap()
                     .await;
-                PANIC_LINE.store(line!(), Ordering::Release);
             }
         }
     });
@@ -742,28 +634,6 @@ fn real_main() -> ! {
     let mut alarm0 = timer.alarm_0().unwrap();
     loop {
         runtime.block_on(async {
-            // let mut play_note = {
-            //     |note: &Note| -> StdPin<Box<dyn Future<Output = ()>>> {
-            //         match note {
-            //             &Play(note, time) => {
-            //                 Box::pin(async {
-            //                     beep_pwm.disable();
-            //                     set_midi_note(note as isize + 69, &mut beep_pwm);
-            //                     beep_pwm.enable();
-            //                     // delay.delay_ms(time);
-            //                 })
-            //             }
-            //             &Rest(time) => {
-            //                 Box::pin(async {
-            //                     beep_pwm.disable();
-            //                     // delay.delay_ms(time);
-            //                     beep_pwm.enable();
-            //                 })
-            //             }
-            //         }
-            //     }
-            // };
-
             fn play_note<'a, Alarm: AlarmExt + 'static>(
                 note: Note,
                 beep_pwm: &'a mut Slice<Pwm1, FreeRunning>,
@@ -774,24 +644,18 @@ fn real_main() -> ! {
                         beep_pwm.disable();
                         set_midi_note(note as isize + 69, beep_pwm);
                         beep_pwm.enable();
-                        PANIC_LINE.store(line!(), Ordering::Release);
+
                         Sleep::new(alarm, MillisDurationU32::from_ticks(time.into()))
                             .ok()
                             .unwrap()
                             .await;
-                        PANIC_LINE.store(line!(), Ordering::Release);
                     }),
                     Rest(time) => Box::pin(async move {
                         beep_pwm.disable();
-                        PANIC_LINE.store(line!(), Ordering::Release);
-                        let a = Sleep::new(alarm, MillisDurationU32::from_ticks(time.into()));
-                        PANIC_LINE.store(line!(), Ordering::Release);
-                        let b = a.ok();
-                        PANIC_LINE.store(line!(), Ordering::Release);
-                        let c = b.unwrap();
-                        PANIC_LINE.store(line!(), Ordering::Release);
-                        let d = c.await;
-                        PANIC_LINE.store(line!(), Ordering::Release);
+                        Sleep::new(alarm, MillisDurationU32::from_ticks(time.into()))
+                            .ok()
+                            .unwrap()
+                            .await;
                         beep_pwm.enable();
                     }),
                 }

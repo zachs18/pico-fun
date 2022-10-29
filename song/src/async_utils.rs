@@ -6,7 +6,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use core::task::{Poll, RawWaker, RawWakerVTable, Waker};
 
 use crate::alloc_utils::Arc;
-use crate::bsp;
+use crate::board_support;
 use crate::hal_exts::AlarmExt;
 use alloc::boxed::Box;
 use alloc::collections::VecDeque;
@@ -156,7 +156,7 @@ impl<'a, Alarm: AlarmExt> Sleep<'a, Alarm> {
                 });
 
                 unsafe {
-                    bsp::hal::pac::NVIC::unmask(Alarm::interrupt());
+                    board_support::hal::pac::NVIC::unmask(Alarm::interrupt());
                 };
                 alarm.enable_interrupt();
 
@@ -191,7 +191,7 @@ impl<'a, Alarm: AlarmExt> Drop for Sleep<'a, Alarm> {
         critical_section::with(|cs| {
             self.alarm.disable_interrupt();
             self.alarm.clear_interrupt();
-            bsp::hal::pac::NVIC::mask(Alarm::interrupt());
+            board_support::hal::pac::NVIC::mask(Alarm::interrupt());
             if !self.wake.0.load(Ordering::Acquire) {
                 // Remove the waker (Prob not necessary)
                 self.wake.1.borrow(cs).replace(None);

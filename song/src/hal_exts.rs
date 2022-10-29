@@ -1,13 +1,27 @@
 use alloc::boxed::Box;
 use core::cell::RefCell;
+use embedded_hal::digital::v2::OutputPin;
 
-use crate::bsp::{self, hal::pac::interrupt};
+use crate::board_support::{self, hal::pac::interrupt};
 use critical_section::Mutex;
 use rp_pico::hal::timer::{Alarm, Alarm0, Alarm1, Alarm2, Alarm3};
 
+/// I fully understand why `set_state` takes a `PinState` and not a `bool`, but it's annoying so I did this.
+pub trait OutputPinExt: OutputPin {
+    fn set(&mut self, high: bool) -> Result<(), Self::Error>;
+}
+
+impl<P: OutputPin + ?Sized> OutputPinExt for P {
+    fn set(&mut self, high: bool) -> Result<(), Self::Error> {
+        match high {
+            false => self.set_low(),
+            true => self.set_high(),
+        }
+    }
+}
 pub trait AlarmExt: Alarm + Unpin {
     fn handler() -> &'static Mutex<RefCell<Option<Box<dyn FnOnce() + Send>>>>;
-    fn interrupt() -> bsp::hal::pac::Interrupt;
+    fn interrupt() -> board_support::hal::pac::Interrupt;
     fn register(&mut self, handler: Box<dyn FnOnce() + Send>) {
         critical_section::with(|cs| Self::handler().borrow(cs).borrow_mut().replace(handler));
     }
@@ -17,13 +31,13 @@ pub trait AlarmExt: Alarm + Unpin {
     unsafe fn clear_interrupt_without_ownership();
 }
 
-fn handler<Alarm: AlarmExt>(handler: &Mutex<RefCell<Option<Box<dyn FnOnce() + Send>>>>) {
+fn handle_with<Alarm: AlarmExt>(handler: &Mutex<RefCell<Option<Box<dyn FnOnce() + Send>>>>) {
     critical_section::with(|cs| {
         if let Some(handler) = handler.borrow(cs).take() {
             handler();
         }
 
-        // TODO: I thought the docs for `clear_interrupt` said that the interrupt wouldn't run again, but that appears to not be true.
+        // TODO: I thought the docs for `clear_interrupt` meant that the irq wouldn't run again, but that appears to not be true.
         unsafe {
             Alarm::clear_interrupt_without_ownership();
         }
@@ -35,20 +49,21 @@ macro_rules! make_timer_irq {
         static $handler: Mutex<RefCell<Option<Box<dyn FnOnce() + Send>>>> =
             Mutex::new(RefCell::new(None));
 
+        #[allow(non_snake_case)]
         #[interrupt]
         fn $interrupt() {
-            handler::<$alarm>(&$handler);
+            handle_with::<$alarm>(&$handler);
         }
 
         impl AlarmExt for $alarm {
             fn handler() -> &'static Mutex<RefCell<Option<Box<dyn FnOnce() + Send>>>> {
                 &$handler
             }
-            fn interrupt() -> bsp::hal::pac::Interrupt {
-                bsp::hal::pac::Interrupt::$interrupt
+            fn interrupt() -> board_support::hal::pac::Interrupt {
+                board_support::hal::pac::Interrupt::$interrupt
             }
             unsafe fn clear_interrupt_without_ownership() {
-                // TODO: I thought the docs for `clear_interrupt` said that the interrupt wouldn't run again, but that appears to not be true.
+                // TODO: I thought the docs for `clear_interrupt` meant that the irq wouldn't run again, but that appears to not be true.
                 let mut aaa: Self = unsafe { core::mem::transmute(()) };
                 aaa.clear_interrupt();
             }

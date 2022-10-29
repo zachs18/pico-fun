@@ -1,3 +1,5 @@
 target/
 /rp-hal
 /critical-section
+/KiCad*
+/kicad*

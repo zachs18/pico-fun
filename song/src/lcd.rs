@@ -47,15 +47,13 @@ use crate::{async_utils::Sleep, hal_exts::AlarmExt};
 // use ufmt_write::uWrite;
 
 /// API to write to the LCD.
-pub struct Lcd<'a, I, Alarm>
+pub struct Lcd<'a, I>
 where
     I: Write,
-    Alarm: AlarmExt,
 {
     i2c: &'a mut I,
     address: u8,
     rows: u8,
-    alarm: &'a mut Alarm,
     backlight_state: Backlight,
     cursor_on: bool,
     cursor_blink: bool,
@@ -118,17 +116,15 @@ impl From<i2c_pio::Error> for LcdWriteError<i2c_pio::Error> {
     }
 }
 
-impl<'a, I, Alarm> Lcd<'a, I, Alarm>
+impl<'a, I> Lcd<'a, I>
 where
     I: Write,
-    Alarm: AlarmExt,
     LcdWriteError<<I as Write>::Error>: From<<I as Write>::Error>,
 {
     /// Create new instance with only the I2C and delay instance.
-    pub fn new(i2c: &'a mut I, alarm: &'a mut Alarm) -> Self {
+    pub fn new(i2c: &'a mut I) -> Self {
         Self {
             i2c,
-            alarm,
             backlight_state: Backlight::On,
             address: 0,
             rows: 0,
@@ -164,22 +160,25 @@ where
     /// [datasheet]: https://www.openhacks.com/uploadsproductos/eone-1602a1.pdf
     /// [code]: https://github.com/jalhadi/i2c-hello-world/blob/main/src/main.rs
     /// [blog post]: https://badboi.dev/rust,/microcontrollers/2020/11/09/i2c-hello-world.html
-    pub async fn init(mut self) -> Result<Lcd<'a, I, Alarm>, LcdWriteError<<I as Write>::Error>> {
+    pub async fn init(
+        mut self,
+        alarm: &mut impl AlarmExt,
+    ) -> Result<Lcd<'a, I>, LcdWriteError<<I as Write>::Error>> {
         // Initial delay to wait for init after power on.
-        Sleep::new(self.alarm, MillisDurationU32::from_ticks(80))?.await;
+        Sleep::new(alarm, MillisDurationU32::from_ticks(80))?.await;
 
         // Init with 8 bit mode
         let mode_8bit = Mode::FunctionSet as u8 | BitMode::Bit8 as u8;
-        self.write4bits(mode_8bit).await?;
-        Sleep::new(self.alarm, MillisDurationU32::from_ticks(5))?.await;
-        self.write4bits(mode_8bit).await?;
-        Sleep::new(self.alarm, MillisDurationU32::from_ticks(5))?.await;
-        self.write4bits(mode_8bit).await?;
-        Sleep::new(self.alarm, MillisDurationU32::from_ticks(5))?.await;
+        self.write4bits(mode_8bit, alarm).await?;
+        Sleep::new(alarm, MillisDurationU32::from_ticks(5))?.await;
+        self.write4bits(mode_8bit, alarm).await?;
+        Sleep::new(alarm, MillisDurationU32::from_ticks(5))?.await;
+        self.write4bits(mode_8bit, alarm).await?;
+        Sleep::new(alarm, MillisDurationU32::from_ticks(5))?.await;
 
         // Switch to 4 bit mode
         let mode_4bit = Mode::FunctionSet as u8 | BitMode::Bit4 as u8;
-        self.write4bits(mode_4bit).await?;
+        self.write4bits(mode_4bit, alarm).await?;
 
         // Function set command
         let lines = if self.rows == 0 { 0x00 } else { 0x08 };
@@ -187,6 +186,7 @@ where
             Mode::FunctionSet as u8 |
             // 5x8 display: 0x00, 5x10: 0x4
             lines, // Two line display
+            alarm,
         )
         .await?;
 
@@ -200,28 +200,32 @@ where
         } else {
             display_ctrl
         };
-        self.command(Mode::DisplayControl as u8 | display_ctrl)
+        self.command(Mode::DisplayControl as u8 | display_ctrl, alarm)
             .await?;
-        self.command(Mode::Cmd as u8 | Commands::Clear as u8)
+        self.command(Mode::Cmd as u8 | Commands::Clear as u8, alarm)
             .await?; // Clear Display
 
         // Entry right: shifting cursor moves to right
-        self.command(0x04).await?;
-        self.backlight(self.backlight_state).await?;
+        self.command(0x04, alarm).await?;
+        self.backlight(self.backlight_state, alarm).await?;
         Ok(self)
     }
 
-    async fn write4bits(&mut self, data: u8) -> Result<(), LcdWriteError<<I as Write>::Error>> {
+    async fn write4bits(
+        &mut self,
+        data: u8,
+        alarm: &mut impl AlarmExt,
+    ) -> Result<(), LcdWriteError<<I as Write>::Error>> {
         self.i2c.write(
             self.address,
             &[data | DisplayControl::DisplayOn as u8 | self.backlight_state as u8],
         )?;
-        Sleep::new(self.alarm, MillisDurationU32::from_ticks(1))?.await;
+        Sleep::new(alarm, MillisDurationU32::from_ticks(1))?.await;
         self.i2c.write(
             self.address,
             &[DisplayControl::Off as u8 | self.backlight_state as u8],
         )?;
-        Sleep::new(self.alarm, MillisDurationU32::from_ticks(5))?.await;
+        Sleep::new(alarm, MillisDurationU32::from_ticks(5))?.await;
         Ok(())
     }
 
@@ -229,21 +233,27 @@ where
         &mut self,
         data: u8,
         mode: Mode,
+        alarm: &mut impl AlarmExt,
     ) -> Result<(), LcdWriteError<<I as Write>::Error>> {
         let high_bits: u8 = data & 0xf0;
         let low_bits: u8 = (data << 4) & 0xf0;
-        self.write4bits(high_bits | mode as u8).await?;
-        self.write4bits(low_bits | mode as u8).await?;
+        self.write4bits(high_bits | mode as u8, alarm).await?;
+        self.write4bits(low_bits | mode as u8, alarm).await?;
         Ok(())
     }
 
-    async fn command(&mut self, data: u8) -> Result<(), LcdWriteError<<I as Write>::Error>> {
-        self.send(data, Mode::Cmd).await
+    async fn command(
+        &mut self,
+        data: u8,
+        alarm: &mut impl AlarmExt,
+    ) -> Result<(), LcdWriteError<<I as Write>::Error>> {
+        self.send(data, Mode::Cmd, alarm).await
     }
 
     pub async fn backlight(
         &mut self,
         backlight: Backlight,
+        _alarm: &mut impl AlarmExt,
     ) -> Result<(), LcdWriteError<<I as Write>::Error>> {
         self.backlight_state = backlight;
         self.i2c.write(
@@ -257,24 +267,31 @@ where
     pub async fn write_str(
         &mut self,
         data: &str,
+        alarm: &mut impl AlarmExt,
     ) -> Result<(), LcdWriteError<<I as Write>::Error>> {
         for c in data.chars() {
-            self.send(c as u8, Mode::Data).await?;
+            self.send(c as u8, Mode::Data, alarm).await?;
         }
         Ok(())
     }
 
     /// Clear the display
-    pub async fn clear(&mut self) -> Result<(), LcdWriteError<<I as Write>::Error>> {
-        self.command(Commands::Clear as u8).await?;
-        Sleep::new(self.alarm, MillisDurationU32::from_ticks(2))?.await;
+    pub async fn clear(
+        &mut self,
+        alarm: &mut impl AlarmExt,
+    ) -> Result<(), LcdWriteError<<I as Write>::Error>> {
+        self.command(Commands::Clear as u8, alarm).await?;
+        Sleep::new(alarm, MillisDurationU32::from_ticks(2))?.await;
         Ok(())
     }
 
     /// Return cursor to upper left corner, i.e. (0,0).
-    pub async fn return_home(&mut self) -> Result<(), LcdWriteError<<I as Write>::Error>> {
-        self.command(Commands::ReturnHome as u8).await?;
-        Sleep::new(self.alarm, MillisDurationU32::from_ticks(2))?.await;
+    pub async fn return_home(
+        &mut self,
+        alarm: &mut impl AlarmExt,
+    ) -> Result<(), LcdWriteError<<I as Write>::Error>> {
+        self.command(Commands::ReturnHome as u8, alarm).await?;
+        Sleep::new(alarm, MillisDurationU32::from_ticks(2))?.await;
         Ok(())
     }
 
@@ -283,11 +300,12 @@ where
         &mut self,
         row: u8,
         col: u8,
+        alarm: &mut impl AlarmExt,
     ) -> Result<(), LcdWriteError<<I as Write>::Error>> {
-        self.return_home().await?;
+        self.return_home(alarm).await?;
         let shift: u8 = row * 40 + col;
         for _i in 0..shift {
-            self.command(Commands::ShiftCursor as u8).await?;
+            self.command(Commands::ShiftCursor as u8, alarm).await?;
         }
         Ok(())
     }
