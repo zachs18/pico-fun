@@ -26,11 +26,13 @@ use board_support::{
     },
     pac::interrupt,
 };
-use core::{arch::asm, cell::RefCell, convert::Infallible, mem::MaybeUninit, panic::PanicInfo};
+use core::{
+    arch::asm, cell::RefCell, convert::Infallible, future::Future, mem::MaybeUninit,
+    panic::PanicInfo,
+};
 use critical_section::Mutex;
 use embedded_hal::{digital::v2::OutputPin, PwmPin};
 use fugit::{MillisDurationU32, RateExtU32};
-use futures::Future;
 use i2c_pio::I2C;
 use lcd::Lcd;
 use rp_pico as board_support;
@@ -100,8 +102,8 @@ fn noploop(count: usize) {
 #[panic_handler]
 fn panic_led(info: &PanicInfo) -> ! {
     critical_section::with(|cs| {
-        let mut led = PANIC_LED.borrow(cs).borrow_mut();
-        let mut leds = PINS.borrow(cs).borrow_mut();
+        let mut led = PANIC_LED.borrow_ref_mut(cs);
+        let mut leds = PINS.borrow_ref_mut(cs);
         let (_file, line) = info
             .location()
             .map(|loc| (loc.file(), loc.line()))
@@ -454,7 +456,7 @@ fn real_main() -> ! {
     let _spi_sclk = pins.gpio6.into_mode::<hal::gpio::FunctionSpi>();
     let _spi_mosi = pins.gpio7.into_mode::<hal::gpio::FunctionSpi>();
     // let _spi_miso = pins.gpio4.into_mode::<hal::gpio::FunctionSpi>();
-    let mut spi_cs = pins.gpio1.into_push_pull_output();
+    let mut spi_cs = pins.gpio1.into_push_pull_output(); // TODO: SPI CS supposed to be pulldown (assert low, not asserted high)?
     let spi = hal::Spi::<_, _, 8>::new(pac.SPI0);
 
     // Exchange the uninitialised SPI driver for an initialised one
@@ -582,12 +584,12 @@ fn real_main() -> ! {
         critical_section::with(|cs| match r {
             Ok(never) => match never {},
             Err(LcdWriteError::ScheduleAlarmError(_alarm)) => {
-                if let Some((led1, _led2, _led3, _led4, ..)) = &mut *PINS.borrow(cs).borrow_mut() {
+                if let Some((led1, _led2, _led3, _led4, ..)) = &mut *PINS.borrow_ref_mut(cs) {
                     let _ = led1.set_high();
                 }
             }
             Err(LcdWriteError::WriteError(_err)) => {
-                if let Some((_led1, led2, _led3, _led4, ..)) = &mut *PINS.borrow(cs).borrow_mut() {
+                if let Some((_led1, led2, _led3, _led4, ..)) = &mut *PINS.borrow_ref_mut(cs) {
                     let _ = led2.set_high();
                 }
             }
@@ -756,7 +758,7 @@ fn IO_IRQ_BANK0() {
     if LEDS_AND_BUTTONS.is_none() {
         critical_section::with(|cs| {
             if let Some((led1, led2, led3, led4, button1, button2, button3, button4)) =
-                &mut *PINS.borrow(cs).borrow_mut()
+                &mut *PINS.borrow_ref_mut(cs)
             {
                 let mut set_leds = |value: u8| -> Result<(), _> {
                     led1.set(value & 8 != 0)?;

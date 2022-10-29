@@ -23,10 +23,10 @@ pub trait AlarmExt: Alarm + Unpin {
     fn handler() -> &'static Mutex<RefCell<Option<Box<dyn FnOnce() + Send>>>>;
     fn interrupt() -> board_support::hal::pac::Interrupt;
     fn register(&mut self, handler: Box<dyn FnOnce() + Send>) {
-        critical_section::with(|cs| Self::handler().borrow(cs).borrow_mut().replace(handler));
+        critical_section::with(|cs| Self::handler().borrow_ref_mut(cs).replace(handler));
     }
     fn unregister(&mut self) -> Option<Box<dyn FnOnce() + Send>> {
-        critical_section::with(|cs| Self::handler().borrow(cs).borrow_mut().take())
+        critical_section::with(|cs| Self::handler().borrow_ref_mut(cs).take())
     }
     unsafe fn clear_interrupt_without_ownership();
 }

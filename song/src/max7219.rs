@@ -1,4 +1,4 @@
-//! https://github.com/mcauser/micropython-max7219/blob/master/max7219.py
+//! <https://github.com/mcauser/micropython-max7219/blob/master/max7219.py>
 
 use cortex_m::prelude::*;
 use embedded_hal::digital::v2::OutputPin;
