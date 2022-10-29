@@ -5,7 +5,7 @@
 #![cfg_attr(feature = "unsize", feature(unsize))]
 #![cfg_attr(feature = "unsize", feature(coerce_unsized))]
 #![deny(unsafe_op_in_unsafe_fn)]
-//! Polyfilled subset of [`alloc::alloc::Arc`] using [`critical_section`].
+//! Polyfilled/vendored subset of [`alloc::alloc::Arc`] using [`critical_section`].
 //! See standard library for docs of relevant functions.
 
 extern crate alloc;
@@ -36,7 +36,7 @@ struct ArcInner<T: ?Sized> {
 #[cfg(feature = "unsize")]
 impl<T: ?Sized + Unsize<U>, U: ?Sized> CoerceUnsized<Arc<U>> for Arc<T> {}
 
-/// Atomically reference-counted pointer to `T`, using [`critical_section`] whenever
+/// Thread- and interrupt-safe reference-counted pointer to `T`, using [`critical_section`] whenever
 /// modifying anything atomic, to allow for platforms without atomic compare-and-swap.
 pub struct Arc<T: ?Sized> {
     data: NonNull<ArcInner<T>>,
@@ -123,34 +123,35 @@ impl<T: ?Sized> Drop for Arc<T> {
         let strong = unsafe { &(*ptr).strong };
         let old_strong = strong.load(Ordering::Acquire);
 
-        if old_strong == 1 {
+        let should_drop_inner = if old_strong == 1 {
             // SAFETY: This Arc does not support Weak, so if strong was observed to be 1,
             // we know we are the last owner.
+            true
+        } else {
+            critical_section::with(|_cs| {
+                let old_strong = strong.load(Ordering::Acquire);
+                if old_strong > 1 {
+                    // SAFETY: This Arc is aliased, but we are in a critical section, so no other code can modify strong.
+                    // Decrement strong, and do not drop inner;
+                    let new_strong = old_strong.checked_sub(1).unwrap();
+                    strong.store(new_strong, Ordering::Release);
+                    false
+                } else {
+                    // SAFETY: This Arc does not support Weak, so if strong was observed to be 1,
+                    // we know we are the last owner. We drop outside of the critical section,
+                    // which is correct because Weak is not supported.
+                    true
+                }
+            })
+        };
+
+        if should_drop_inner {
             unsafe {
                 let ptr = ptr as *mut ArcInner<T>;
                 let layout = Layout::for_value(&*ptr);
                 core::ptr::drop_in_place(ptr);
                 alloc::alloc::dealloc(ptr.cast(), layout);
             }
-        } else {
-            critical_section::with(|_cs| {
-                let old_strong = strong.load(Ordering::Acquire);
-                if old_strong > 1 {
-                    // SAFETY: This Arc is aliased, but we are in a critical section, so no other code can modify strong.
-                    let new_strong = old_strong.checked_sub(1).unwrap();
-                    strong.store(new_strong, Ordering::Release);
-                } else {
-                    // SAFETY: This Arc does not support Weak, so if strong was observed to be 1,
-                    // we know we are the last owner.
-                    // TODO: move this outside of critical section
-                    unsafe {
-                        let ptr = ptr as *mut ArcInner<T>;
-                        let layout = Layout::for_value(&*ptr);
-                        core::ptr::drop_in_place(ptr);
-                        alloc::alloc::dealloc(ptr.cast(), layout);
-                    }
-                }
-            });
         }
     }
 }
@@ -191,7 +192,7 @@ impl<T: ?Sized> core::ops::Deref for Arc<T> {
 /// valid instance of T, but the T is allowed to be dropped.
 unsafe fn data_offset<T: ?Sized>(ptr: *const T) -> usize {
     // Align the unsized value to the end of the ArcInner.
-    // Because RcBox is repr(C), it will always be the last field in memory.
+    // Because ArcInner is repr(C), it will always be the last field in memory.
     // SAFETY: since the only unsized types possible are slices, trait objects,
     // and extern types, the input safety requirement is currently enough to
     // satisfy the requirements of align_of_val_raw; this is an implementation
