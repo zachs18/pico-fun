@@ -19,7 +19,7 @@ use board_support::{
         gpio::{bank0::*, AnyPin, FunctionPwm, Input, Output, Pin, PullUp, PushPull},
         pac,
         prelude::*,
-        pwm::{FreeRunning, Pwm1, Slice, Slices},
+        pwm::{Slice, SliceId, SliceMode, Slices, ValidSliceMode},
         sio::Sio,
         watchdog::Watchdog,
         Timer,
@@ -57,6 +57,7 @@ mod midi_notes;
 #[derive(Clone, Copy)]
 enum Note {
     Play(i8, u16),
+    PlayShort(i8, u16),
     Rest(u16),
 }
 use Note::*;
@@ -158,7 +159,7 @@ const SONG_1: &'static [(Note, &'static str)] = &[
 
     (Play(9, 250), "I"),
     (Rest(250), ""),
-    (Play(9, 250), "don't"),
+    (PlayShort(9, 250), "don't"),
     (Play(9, 250), "care"),
     (Play(11, 250), "if"),
     (Play(12, 250), "I"),
@@ -178,13 +179,13 @@ const SONG_1: &'static [(Note, &'static str)] = &[
     (Play(7, 750), "home"),
     (Play(2, 750), "team"),
 
-    (Play(0, 250), "If"),
+    (PlayShort(0, 250), "If"),
     (Play(0, 250), "they"),
     (Play(2, 250), "don't"),
     (Play(4, 250), "win"),
     (Play(5, 250), "it's"),
     (Play(7, 250), "a"),
-    (Play(9, 1000), "shame"),
+    (PlayShort(9, 1000), "shame"),
     (Play(9, 250), "For"),
     (Play(11, 250), "it's"),
 
@@ -208,95 +209,95 @@ const SONG_1: &'static [(Note, &'static str)] = &[
 #[rustfmt::skip]
 #[allow(unused)]
 const SONG_2: &'static [Note] = &[
-    Play(0, 250),
+    PlayShort(0, 250),
 
     Play(0, 250),
     Play(4, 250),
+    PlayShort(7, 250),
     Play(7, 250),
-    Play(7, 250),
     Rest(250),
+    PlayShort(7 + 12, 250),
     Play(7 + 12, 250),
-    Play(7 + 12, 250),
     Rest(250),
-    Play(4 + 12, 250),
+    PlayShort(4 + 12, 250),
     Play(4 + 12, 250),
     Rest(250),
-    Play(0, 250),
+    PlayShort(0, 250),
 
     Play(0, 250),
     Play(4, 250),
+    PlayShort(7, 250),
     Play(7, 250),
-    Play(7, 250),
     Rest(250),
+    PlayShort(7 + 12, 250),
     Play(7 + 12, 250),
-    Play(7 + 12, 250),
     Rest(250),
-    Play(5 + 12, 250),
+    PlayShort(5 + 12, 250),
     Play(5 + 12, 250),
     Rest(250),
-    Play(-1, 250),
+    PlayShort(-1, 250),
 
     Play(-1, 250),
     Play(2, 250),
+    PlayShort(9, 250),
     Play(9, 250),
-    Play(9, 250),
     Rest(250),
+    PlayShort(9 + 12, 250),
     Play(9 + 12, 250),
-    Play(9 + 12, 250),
     Rest(250),
-    Play(5 + 12, 250),
+    PlayShort(5 + 12, 250),
     Play(5 + 12, 250),
     Rest(250),
-    Play(-1, 250),
+    PlayShort(-1, 250),
 
     Play(-1, 250),
     Play(2, 250),
+    PlayShort(9, 250),
     Play(9, 250),
-    Play(9, 250),
     Rest(250),
+    PlayShort(9 + 12, 250),
     Play(9 + 12, 250),
-    Play(9 + 12, 250),
     Rest(250),
-    Play(4 + 12, 250),
+    PlayShort(4 + 12, 250),
     Play(4 + 12, 250),
     Rest(250),
-    Play(0, 250),
+    PlayShort(0, 250),
 
     Play(0, 250),
     Play(4, 250),
     Play(7, 250),
     Play(12, 250),
     Rest(250),
-    Play(12 + 12, 250),
+    PlayShort(12 + 12, 250),
     Play(12 + 12, 250),
     Rest(250),
-    Play(7 + 12, 250),
+    PlayShort(7 + 12, 250),
     Play(7 + 12, 250),
     Rest(250),
-    Play(0, 250),
+    PlayShort(0, 250),
 
     Play(0, 250),
     Play(4, 250),
     Play(7, 250),
     Play(12, 250),
     Rest(250),
-    Play(12 + 12, 250),
+    PlayShort(12 + 12, 250),
     Play(12 + 12, 250),
     Rest(250),
-    Play(9 + 12, 250),
+    PlayShort(9 + 12, 250),
     Play(9 + 12, 250),
     Rest(250),
-    Play(2, 250),
+    PlayShort(2, 250),
 
     Play(2, 250),
     Play(5, 250),
-    Play(9, 250),
+    PlayShort(9, 250),
     Play(9, 1000),
     Play(6, 250),
     Play(7, 250),
     Play(4 + 12, 1000),
     Play(12, 250),
-    Play(4, 250),
+    PlayShort(4, 250),
 
     Play(4, 500),
     Play(2, 250),
@@ -305,14 +306,14 @@ const SONG_2: &'static [Note] = &[
 
     Play(0, 250),
     Rest(250),
-    Play(0, 250),
+    PlayShort(0, 250),
     Play(0, 250),
     Rest(500),
 ];
 
 #[entry]
 fn main() -> ! {
-    static mut HEAP_MEM: [MaybeUninit<u8>; 131072] = unsafe { MaybeUninit::uninit().assume_init() };
+    static mut HEAP_MEM: [MaybeUninit<u8>; 131072] = [MaybeUninit::new(0); 131072];
     ALLOC.init_from_slice(HEAP_MEM);
     real_main() // rust-analyzer macro shenanigans
 }
@@ -337,42 +338,65 @@ static PINS: Mutex<RefCell<Option<ButtonsAndLeds>>> = Mutex::new(RefCell::new(No
 /// Default: 0xffff -> 0x007f = shift of 9 bits
 static DUTY_SHIFT: AtomicU32 = AtomicU32::new(9);
 
-/// `beep_pwm` should be disabled before calling this.
+/// Assumes that `beep_pwm` is enabled. Leaves it enabled after this function.
+/// Disables it during the function to ensure all values are latched together.
 /// `note` should be in `[0, 127]`
-fn set_midi_note(note: isize, beep_pwm: &mut Slice<Pwm1, FreeRunning>) {
+fn set_midi_note<I: SliceId, M: SliceMode + ValidSliceMode<I>>(
+    note: isize,
+    beep_pwm: &mut Slice<I, M>,
+) {
     let (div_int, div_frac, top) = MIDI_NOTES[note as usize];
+    beep_pwm.disable();
     beep_pwm.set_div_int(div_int);
     beep_pwm.set_div_frac(div_frac);
     beep_pwm.set_top(top);
     beep_pwm
         .channel_a
         .set_duty(top >> DUTY_SHIFT.load(Ordering::Relaxed));
+    beep_pwm.enable();
 }
 
-fn play_note<'a, Alarm: AlarmExt + 'static>(
+fn play_note<'a, Alarm: AlarmExt + 'static, I: SliceId, M: SliceMode + ValidSliceMode<I>>(
     note: Note,
-    beep_pwm: &'a mut Slice<Pwm1, FreeRunning>,
+    beep_pwm: &'a mut Slice<I, M>,
     alarm: &'a mut Alarm,
 ) -> impl Future<Output = ()> + 'a {
     async move {
         match note {
             Play(note, time) => {
-                beep_pwm.disable(); // This may fix the occasional screeching? (it doesn't)
+                beep_pwm.channel_a.set_duty(0); // This should fix the occasional screeching.
                 set_midi_note(note as isize + 69, beep_pwm);
                 beep_pwm.enable();
 
                 Sleep::new(alarm, MillisDurationU32::from_ticks(time.into()))
-                    .ok()
                     .unwrap()
                     .await;
             }
+            PlayShort(note, time) => {
+                set_midi_note(note as isize + 69, beep_pwm);
+
+                match time.checked_sub(10) {
+                    Some(play_time) => {
+                        Sleep::new(alarm, MillisDurationU32::from_ticks(play_time.into()))
+                            .unwrap()
+                            .await;
+                        beep_pwm.channel_a.set_duty(0); // This should fix the occasional screeching.
+                        Sleep::new(alarm, MillisDurationU32::from_ticks(10))
+                            .unwrap()
+                            .await;
+                    }
+                    None => {
+                        Sleep::new(alarm, MillisDurationU32::from_ticks(time.into()))
+                            .unwrap()
+                            .await;
+                    }
+                };
+            }
             Rest(time) => {
-                beep_pwm.disable();
+                beep_pwm.channel_a.set_duty(0); // This should fix the occasional screeching.
                 Sleep::new(alarm, MillisDurationU32::from_ticks(time.into()))
-                    .ok()
                     .unwrap()
                     .await;
-                beep_pwm.enable();
             }
         }
     }
@@ -537,18 +561,20 @@ fn real_main() -> ! {
     // });
 
     runtime.spawn(async move {
-        let mut counter = 0_u64;
+        // let mut counter = 0_u64;
 
         let mut max7219 = max7219::Max7219::<_, _, 1>::new(&mut spi, Some(&mut spi_cs)).unwrap();
-        loop {
-            Sleep::new(&mut alarm2, MillisDurationU32::from_ticks(100))
-                .unwrap()
-                .await;
+        // loop {
+        //     Sleep::new(&mut alarm2, MillisDurationU32::from_ticks(100))
+        //         .unwrap()
+        //         .await;
 
-            max7219.show(bytemuck::cast_ref(&counter)).unwrap();
+        //     max7219.show(bytemuck::cast_ref(&counter)).unwrap();
 
-            counter += 1;
-        }
+        //     counter += 1;
+        // }
+        let addr: usize = real_main as usize;
+        max7219.show(bytemuck::cast_ref(&[addr, 0])).unwrap();
     });
 
     let mut alarm3 = timer.alarm_3().unwrap();
@@ -625,7 +651,6 @@ fn real_main() -> ! {
                 });
 
                 Sleep::new(&mut alarm1, MillisDurationU32::from_ticks(500))
-                    .ok()
                     .unwrap()
                     .await;
 
@@ -640,7 +665,6 @@ fn real_main() -> ! {
                 });
 
                 Sleep::new(&mut alarm1, MillisDurationU32::from_ticks(500))
-                    .ok()
                     .unwrap()
                     .await;
             }
@@ -650,6 +674,10 @@ fn real_main() -> ! {
     let mut alarm0 = timer.alarm_0().unwrap();
     loop {
         runtime.block_on(async {
+            for &note in SONG_2 {
+                // let _ = lyric_sender.try_send(lyric);
+                play_note(note, &mut beep_pwm, &mut alarm0).await;
+            }
             for &(note, lyric) in SONG_1 {
                 let _ = lyric_sender.try_send(lyric);
                 play_note(note, &mut beep_pwm, &mut alarm0).await;
