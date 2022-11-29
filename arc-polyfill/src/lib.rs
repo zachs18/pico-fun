@@ -14,7 +14,7 @@ use alloc::alloc::handle_alloc_error;
 use core::{
     alloc::Layout,
     marker::PhantomData,
-    mem::ManuallyDrop,
+    mem::{ManuallyDrop, MaybeUninit},
     ptr::NonNull,
     sync::atomic::{AtomicUsize, Ordering},
 };
@@ -64,6 +64,42 @@ impl<T> Arc<T> {
             }
         } else {
             handle_alloc_error(layout)
+        }
+    }
+
+    pub fn try_unwrap(this: Self) -> Result<T, Self> {
+        let ptr = this.data.as_ptr() as *const ArcInner<T>;
+        let strong = unsafe { &(*ptr).strong };
+        let old_strong = strong.load(Ordering::Acquire);
+
+        let can_unwrap = if old_strong == 1 {
+            // SAFETY: This Arc does not support Weak, so if strong was observed to be 1,
+            // we know we are the last owner, so we can unwrap it.
+            true
+        } else {
+            critical_section::with(|_cs| {
+                let old_strong = strong.load(Ordering::Acquire);
+                if old_strong > 1 {
+                    // SAFETY: This Arc is aliased, so we cannot unwrap it.
+                    false
+                } else {
+                    // SAFETY: This Arc does not support Weak, so if strong was observed to be 1,
+                    // we know we are the last owner, so we can unwrap it.
+                    true
+                }
+            })
+        };
+
+        if can_unwrap {
+            unsafe {
+                // Convert to Arc<MaybeUninit<T>> to deallocate but not drop.
+                let this: Arc<MaybeUninit<T>> =
+                    Arc::from_raw(Arc::into_raw(this) as *const MaybeUninit<T>);
+                let value: T = this.assume_init_read();
+                Ok(value)
+            }
+        } else {
+            Err(this)
         }
     }
 }

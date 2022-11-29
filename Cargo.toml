@@ -2,8 +2,12 @@
 members = [
     "first",
     "song",
+    "song-midi",
+    "seven-seg-1",
     "rp2040-project-template",
     "arc-polyfill",
+    "async-utils",
+    "hal-exts",
 ]
 exclude = [
     "rp-hal",

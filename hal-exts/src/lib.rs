@@ -1,10 +1,15 @@
+#![no_std]
+extern crate alloc;
+
 use alloc::boxed::Box;
 use core::cell::RefCell;
 use embedded_hal::digital::v2::OutputPin;
 
-use crate::board_support::{self, hal::pac::interrupt};
 use critical_section::Mutex;
-use rp_pico::hal::timer::{Alarm, Alarm0, Alarm1, Alarm2, Alarm3};
+use rp_pico::hal::{
+    pac::interrupt,
+    timer::{Alarm, Alarm0, Alarm1, Alarm2, Alarm3},
+};
 
 /// I fully understand why `set_state` takes a `PinState` and not a `bool`, but it's annoying so I did this.
 pub trait OutputPinExt: OutputPin {
@@ -21,7 +26,7 @@ impl<P: OutputPin + ?Sized> OutputPinExt for P {
 }
 pub trait AlarmExt: Alarm + Unpin {
     fn handler() -> &'static Mutex<RefCell<Option<Box<dyn FnOnce() + Send>>>>;
-    fn interrupt() -> board_support::hal::pac::Interrupt;
+    fn interrupt() -> rp_pico::hal::pac::Interrupt;
     fn register(&mut self, handler: Box<dyn FnOnce() + Send>) {
         critical_section::with(|cs| Self::handler().borrow_ref_mut(cs).replace(handler));
     }
@@ -59,8 +64,8 @@ macro_rules! make_timer_irq {
             fn handler() -> &'static Mutex<RefCell<Option<Box<dyn FnOnce() + Send>>>> {
                 &$handler
             }
-            fn interrupt() -> board_support::hal::pac::Interrupt {
-                board_support::hal::pac::Interrupt::$interrupt
+            fn interrupt() -> rp_pico::hal::pac::Interrupt {
+                rp_pico::hal::pac::Interrupt::$interrupt
             }
             unsafe fn clear_interrupt_without_ownership() {
                 // TODO: I thought the docs for `clear_interrupt` meant that the irq wouldn't run again, but that appears to not be true.

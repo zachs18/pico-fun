@@ -70,6 +70,8 @@ static mut USB_SERIAL: Option<SerialPort<board_support::hal::usb::UsbBus>> = Non
 static PANIC_LED: Mutex<RefCell<Option<Pin<Gpio25, Output<PushPull>>>>> =
     Mutex::new(RefCell::new(None));
 
+static MIDI_FILE: &'static [u8] = include_bytes!("../file.mid");
+
 fn noploop(count: usize) {
     for _ in 0..count {
         unsafe {
@@ -556,6 +558,7 @@ fn real_main() -> ! {
     //     let mut max7219 = max7219::Max7219::new(spi, Some(spi_cs), 1).unwrap();
     // });
 
+    #[cfg(any())]
     runtime.spawn(async move {
         // let mut counter = 0_u64;
 
@@ -668,6 +671,7 @@ fn real_main() -> ! {
     });
 
     let mut alarm0 = timer.alarm_0().unwrap();
+    // #[cfg(any())]
     loop {
         runtime.block_on(async {
             for &note in SONG_2 {
@@ -680,6 +684,55 @@ fn real_main() -> ! {
             }
         })
     }
+
+    let mut max7219 = max7219::Max7219::<_, _, 1>::new(&mut spi, Some(&mut spi_cs)).unwrap();
+
+    #[cfg(any())]
+    loop {
+        let (midi_header, mut midi_tracks) = midly::parse(MIDI_FILE).unwrap();
+        let mut track1 = midi_tracks.next().unwrap().unwrap();
+
+        runtime.block_on(async {
+            let mut cur_key = u8::MAX;
+            beep_pwm.channel_a.set_duty(0);
+            for event in track1 {
+                let event = event.unwrap();
+                max7219
+                    .show(bytemuck::cast_ref(&u64::from(u32::from(event.delta))))
+                    .unwrap();
+                if let Ok(aaa) = Sleep::new(
+                    &mut alarm0,
+                    MillisDurationU32::from_ticks(u32::from(event.delta) * 2),
+                ) {
+                    aaa.await;
+                } else {
+                }
+                if let midly::TrackEventKind::Midi { channel, message } = &event.kind {
+                    match message {
+                        &midly::MidiMessage::NoteOff { key, vel } => {
+                            if key == cur_key {
+                                // beep_pwm.channel_a.set_duty(0);
+                            }
+                        }
+                        &midly::MidiMessage::NoteOn { key, vel } => {
+                            if u8::from(vel) > 0 {
+                                cur_key = key.into();
+                                set_midi_note(isize::from(u8::from(key)) + 12isize, &mut beep_pwm);
+                            } else if key == cur_key {
+                                // beep_pwm.channel_a.set_duty(0);
+                            }
+                        }
+                        midly::MidiMessage::Aftertouch { key, vel } => { /* ignore */ }
+                        midly::MidiMessage::Controller { controller, value } => { /* ignore */ }
+                        midly::MidiMessage::ProgramChange { program } => { /* ignore */ }
+                        midly::MidiMessage::ChannelAftertouch { vel } => { /* ignore */ }
+                        midly::MidiMessage::PitchBend { bend } => { /* ignore */ }
+                    }
+                }
+            }
+        })
+    }
+
     // loop {
     //     for note in SONG_2 {
     //         // match note {

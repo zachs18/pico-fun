@@ -25,6 +25,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8da52d66c7071e2e3fa2a1e5c6d088fec47b593032b254f5e980de8ea54454d6"
 
 [[package]]
+name = "async-utils"
+version = "0.1.0"
+dependencies = [
+ "arc-polyfill",
+ "cortex-m",
+ "critical-section 1.1.1",
+ "fugit",
+ "hal-exts",
+ "rp-pico",
+]
+
+[[package]]
 name = "bare-metal"
 version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -221,6 +233,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "hal-exts"
+version = "0.1.0"
+dependencies = [
+ "critical-section 1.1.1",
+ "embedded-hal",
+ "rp-pico",
+]
+
+[[package]]
 name = "i2c-pio"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -266,6 +287,12 @@ name = "memchr"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2dffe52ecf27772e601905b7522cb4ef790d2cc203488bbd0e2fe85fcb74566d"
+
+[[package]]
+name = "midly"
+version = "0.5.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e5f3c664ced7caa98ccb7ed4c67cd0bd6a6bd8ecedf8b49f38544a4a8e50f0ae"
 
 [[package]]
 name = "nb"
@@ -529,10 +556,11 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "388a1df253eca08550bef6c72392cfe7c30914bf41df5269b68cbd6ff8f570a3"
 
 [[package]]
-name = "song"
+name = "seven-seg-1"
 version = "0.1.0"
 dependencies = [
  "arc-polyfill",
+ "async-utils",
  "bytemuck",
  "cortex-m",
  "cortex-m-rt",
@@ -540,9 +568,59 @@ dependencies = [
  "defmt",
  "embedded-hal",
  "fugit",
+ "hal-exts",
  "i2c-pio",
  "libm",
  "linked_list_allocator",
+ "nb 1.0.0",
+ "once_cell",
+ "rp-pico",
+ "usb-device",
+ "usbd-serial",
+]
+
+[[package]]
+name = "song"
+version = "0.1.0"
+dependencies = [
+ "arc-polyfill",
+ "async-utils",
+ "bytemuck",
+ "cortex-m",
+ "cortex-m-rt",
+ "critical-section 1.1.1",
+ "defmt",
+ "embedded-hal",
+ "fugit",
+ "hal-exts",
+ "i2c-pio",
+ "libm",
+ "linked_list_allocator",
+ "nb 1.0.0",
+ "once_cell",
+ "rp-pico",
+ "usb-device",
+ "usbd-serial",
+]
+
+[[package]]
+name = "song-midi"
+version = "0.1.0"
+dependencies = [
+ "arc-polyfill",
+ "async-utils",
+ "bytemuck",
+ "cortex-m",
+ "cortex-m-rt",
+ "critical-section 1.1.1",
+ "defmt",
+ "embedded-hal",
+ "fugit",
+ "hal-exts",
+ "i2c-pio",
+ "libm",
+ "linked_list_allocator",
+ "midly",
  "nb 1.0.0",
  "once_cell",
  "rp-pico",

@@ -38,11 +38,11 @@
 
 use core::convert::Infallible;
 
-use async_utils::Sleep;
 use embedded_hal::blocking::i2c::Write;
 use fugit::MillisDurationU32;
-use hal_exts::AlarmExt;
 use rp_pico::hal::timer::ScheduleAlarmError;
+
+use crate::{async_utils::Sleep, hal_exts::AlarmExt};
 
 // use ufmt_write::uWrite;
 
