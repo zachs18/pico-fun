@@ -283,6 +283,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e322f259d225fbae43a1b053b2dc6a5968a6bdf8b205f5de684dab485b95030e"
 
 [[package]]
+name = "max7219"
+version = "0.1.0"
+dependencies = [
+ "cortex-m",
+ "embedded-hal",
+ "rp-pico",
+ "utils",
+]
+
+[[package]]
 name = "memchr"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -572,11 +582,23 @@ dependencies = [
  "i2c-pio",
  "libm",
  "linked_list_allocator",
+ "max7219",
  "nb 1.0.0",
  "once_cell",
  "rp-pico",
+ "sevenseg-5611bs",
  "usb-device",
  "usbd-serial",
+ "utils",
+]
+
+[[package]]
+name = "sevenseg-5611bs"
+version = "0.1.0"
+dependencies = [
+ "embedded-hal",
+ "hal-exts",
+ "utils",
 ]
 
 [[package]]
@@ -596,11 +618,13 @@ dependencies = [
  "i2c-pio",
  "libm",
  "linked_list_allocator",
+ "max7219",
  "nb 1.0.0",
  "once_cell",
  "rp-pico",
  "usb-device",
  "usbd-serial",
+ "utils",
 ]
 
 [[package]]
@@ -620,12 +644,14 @@ dependencies = [
  "i2c-pio",
  "libm",
  "linked_list_allocator",
+ "max7219",
  "midly",
  "nb 1.0.0",
  "once_cell",
  "rp-pico",
  "usb-device",
  "usbd-serial",
+ "utils",
 ]
 
 [[package]]
@@ -661,6 +687,10 @@ dependencies = [
  "nb 0.1.3",
  "usb-device",
 ]
+
+[[package]]
+name = "utils"
+version = "0.1.0"
 
 [[package]]
 name = "vcell"

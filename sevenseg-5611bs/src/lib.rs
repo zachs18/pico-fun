@@ -1,8 +1,9 @@
+#![no_std]
 //! <https://github.com/mcauser/micropython-max7219/blob/master/max7219.py>
 
 use embedded_hal::digital::v2::OutputPin;
-
 use hal_exts::OutputPinExt;
+use utils::MaybeOwned;
 
 pub struct SevenSeg<
     'a,
@@ -16,14 +17,14 @@ pub struct SevenSeg<
     PinG: OutputPin<Error = PinA::Error>,
     PinDot: OutputPin<Error = PinA::Error>,
 > {
-    a: &'a mut PinA,
-    b: &'a mut PinB,
-    c: &'a mut PinC,
-    d: &'a mut PinD,
-    e: &'a mut PinE,
-    f: &'a mut PinF,
-    g: &'a mut PinG,
-    dot: Option<&'a mut PinDot>,
+    a: MaybeOwned<'a, PinA>,
+    b: MaybeOwned<'a, PinB>,
+    c: MaybeOwned<'a, PinC>,
+    d: MaybeOwned<'a, PinD>,
+    e: MaybeOwned<'a, PinE>,
+    f: MaybeOwned<'a, PinF>,
+    g: MaybeOwned<'a, PinG>,
+    dot: Option<MaybeOwned<'a, PinDot>>,
 }
 
 impl<
@@ -39,14 +40,14 @@ impl<
     > SevenSeg<'a, true, PinA, PinB, PinC, PinD, PinE, PinF, PinG, PinDot>
 {
     pub fn new_common_anode(
-        a: &'a mut PinA,
-        b: &'a mut PinB,
-        c: &'a mut PinC,
-        d: &'a mut PinD,
-        e: &'a mut PinE,
-        f: &'a mut PinF,
-        g: &'a mut PinG,
-        dot: Option<&'a mut PinDot>,
+        a: MaybeOwned<'a, PinA>,
+        b: MaybeOwned<'a, PinB>,
+        c: MaybeOwned<'a, PinC>,
+        d: MaybeOwned<'a, PinD>,
+        e: MaybeOwned<'a, PinE>,
+        f: MaybeOwned<'a, PinF>,
+        g: MaybeOwned<'a, PinG>,
+        dot: Option<MaybeOwned<'a, PinDot>>,
     ) -> Self {
         Self {
             a,
@@ -74,14 +75,14 @@ impl<
     > SevenSeg<'a, false, PinA, PinB, PinC, PinD, PinE, PinF, PinG, PinDot>
 {
     pub fn new_common_cathode(
-        a: &'a mut PinA,
-        b: &'a mut PinB,
-        c: &'a mut PinC,
-        d: &'a mut PinD,
-        e: &'a mut PinE,
-        f: &'a mut PinF,
-        g: &'a mut PinG,
-        dot: Option<&'a mut PinDot>,
+        a: MaybeOwned<'a, PinA>,
+        b: MaybeOwned<'a, PinB>,
+        c: MaybeOwned<'a, PinC>,
+        d: MaybeOwned<'a, PinD>,
+        e: MaybeOwned<'a, PinE>,
+        f: MaybeOwned<'a, PinF>,
+        g: MaybeOwned<'a, PinG>,
+        dot: Option<MaybeOwned<'a, PinDot>>,
     ) -> Self {
         Self {
             a,
@@ -110,14 +111,14 @@ impl<
     > SevenSeg<'a, COMMON_ANODE, PinA, PinB, PinC, PinD, PinE, PinF, PinG, PinDot>
 {
     pub fn new(
-        a: &'a mut PinA,
-        b: &'a mut PinB,
-        c: &'a mut PinC,
-        d: &'a mut PinD,
-        e: &'a mut PinE,
-        f: &'a mut PinF,
-        g: &'a mut PinG,
-        dot: Option<&'a mut PinDot>,
+        a: MaybeOwned<'a, PinA>,
+        b: MaybeOwned<'a, PinB>,
+        c: MaybeOwned<'a, PinC>,
+        d: MaybeOwned<'a, PinD>,
+        e: MaybeOwned<'a, PinE>,
+        f: MaybeOwned<'a, PinF>,
+        g: MaybeOwned<'a, PinG>,
+        dot: Option<MaybeOwned<'a, PinDot>>,
     ) -> Self {
         Self {
             a,
@@ -129,6 +130,23 @@ impl<
             g,
             dot,
         }
+    }
+
+    pub fn into_inner(
+        self,
+    ) -> (
+        MaybeOwned<'a, PinA>,
+        MaybeOwned<'a, PinB>,
+        MaybeOwned<'a, PinC>,
+        MaybeOwned<'a, PinD>,
+        MaybeOwned<'a, PinE>,
+        MaybeOwned<'a, PinF>,
+        MaybeOwned<'a, PinG>,
+        Option<MaybeOwned<'a, PinDot>>,
+    ) {
+        (
+            self.a, self.b, self.c, self.d, self.e, self.f, self.g, self.dot,
+        )
     }
 
     pub fn clear(&mut self) -> Result<(), PinA::Error> {
@@ -171,83 +189,4 @@ impl<
         ];
         self.write_byte(DIGITS[digit as usize & 0b1111])
     }
-
-    // pub fn new(
-    //     spi: &'a mut Spi<Enabled, SD, 8>,
-    //     mut csp: Option<&'a mut CSP>,
-    // ) -> Result<
-    //     Self,
-    //     Error<<Spi<Enabled, SD, 8> as embedded_hal::blocking::spi::Write<u8>>::Error, CSP::Error>,
-    // > {
-    //     use Command::*;
-    //     let mut this = match csp.as_mut().map(|csp| csp.set_high()).transpose() {
-    //         Err(err) => Err(Error::ChipSelectError(err)),
-    //         Ok(..) => Ok(Self { spi, csp }),
-    //     }?;
-    //     for (command, data) in [
-    //         (SHUTDOWN, 0),
-    //         (DISPLAYTEST, 0),
-    //         (SCANLIMIT, 7),
-    //         (DECODEMODE, 0),
-    //         (SHUTDOWN, 1),
-    //     ] {
-    //         if let Err(err) = this._write(command, data) {
-    //             return Err(err);
-    //         }
-    //     }
-    //     Ok(this)
-    // }
-
-    // fn _write(
-    //     &mut self,
-    //     command: Command,
-    //     data: u8,
-    // ) -> Result<
-    //     (),
-    //     Error<<Spi<Enabled, SD, 8> as embedded_hal::blocking::spi::Write<u8>>::Error, CSP::Error>,
-    // > {
-    //     let csp_raii = self
-    //         .csp
-    //         .as_deref_mut()
-    //         .map(ChipSelectRAII::new)
-    //         .transpose()
-    //         .map_err(Error::ChipSelectError)?;
-    //     for _m in 0..COUNT {
-    //         self.spi
-    //             .write(&[command as u8, data])
-    //             .map_err(Error::<_, _>::SpiDeviceError)?;
-    //     }
-    //     csp_raii
-    //         .map(ChipSelectRAII::free)
-    //         .unwrap_or(Ok(()))
-    //         .map_err(Error::ChipSelectError)
-    // }
-
-    // pub fn show(
-    //     &mut self,
-    //     value: &[u64; COUNT],
-    // ) -> Result<
-    //     (),
-    //     Error<<Spi<Enabled, SD, 8> as embedded_hal::blocking::spi::Write<u8>>::Error, CSP::Error>,
-    // > {
-    //     for y in 0..8 {
-    //         let csp_raii = self
-    //             .csp
-    //             .as_deref_mut()
-    //             .map(ChipSelectRAII::new)
-    //             .transpose()
-    //             .map_err(Error::ChipSelectError)?;
-    //         for m in 0..COUNT {
-    //             let value: [u8; 8] = bytemuck::cast(value[m]);
-    //             self.spi
-    //                 .write(&[Command::digit(y).unwrap() as u8, value[y as usize]])
-    //                 .map_err(Error::<_, _>::SpiDeviceError)?;
-    //         }
-    //         csp_raii
-    //             .map(ChipSelectRAII::free)
-    //             .unwrap_or(Ok(()))
-    //             .map_err(Error::ChipSelectError)?;
-    //     }
-    //     Ok(())
-    // }
 }

@@ -5,7 +5,7 @@
 extern crate alloc;
 
 use async_utils::{Runtime, Sleep};
-use core::{arch::asm, cell::RefCell, mem::MaybeUninit, panic::PanicInfo};
+use core::{cell::RefCell, mem::MaybeUninit, panic::PanicInfo};
 use critical_section::Mutex;
 use embedded_hal::digital::v2::OutputPin;
 use fugit::{MillisDurationU32, RateExtU32};
@@ -29,14 +29,11 @@ use usb_device::{
     prelude::{UsbDevice, UsbDeviceBuilder, UsbVidPid},
 };
 use usbd_serial::SerialPort;
+use utils::{noploop, MaybeOwned};
 
 pub mod alloc_utils;
-// pub mod async_utils;
-// pub mod hal_exts;
 // pub mod lcd;
-pub mod max7219;
 // mod midi_notes;
-pub mod sevenseg_5611bs;
 
 /// The USB Device Driver (shared with the interrupt).
 static mut USB_DEVICE: Option<UsbDevice<board_support::hal::usb::UsbBus>> = None;
@@ -49,14 +46,6 @@ static mut USB_SERIAL: Option<SerialPort<board_support::hal::usb::UsbBus>> = Non
 
 static PANIC_LED: Mutex<RefCell<Option<Pin<Gpio25, Output<PushPull>>>>> =
     Mutex::new(RefCell::new(None));
-
-fn noploop(count: usize) {
-    for _ in 0..count {
-        unsafe {
-            asm!("nop", "nop", "nop", "nop", "nop", "nop", "nop", "nop", "nop",);
-        }
-    }
-}
 
 #[panic_handler]
 fn panic_led(info: &PanicInfo) -> ! {
@@ -170,14 +159,14 @@ fn real_main() -> ! {
     let mut dot_pin = pins.gpio15.into_push_pull_output(); // 5
 
     let mut sevenseg = sevenseg_5611bs::SevenSeg::new_common_anode(
-        &mut a_pin,
-        &mut b_pin,
-        &mut c_pin,
-        &mut d_pin,
-        &mut e_pin,
-        &mut f_pin,
-        &mut g_pin,
-        Some(&mut dot_pin),
+        MaybeOwned::Borrowed(&mut a_pin),
+        MaybeOwned::Borrowed(&mut b_pin),
+        MaybeOwned::Borrowed(&mut c_pin),
+        MaybeOwned::Borrowed(&mut d_pin),
+        MaybeOwned::Borrowed(&mut e_pin),
+        MaybeOwned::Borrowed(&mut f_pin),
+        MaybeOwned::Borrowed(&mut g_pin),
+        Some(MaybeOwned::Borrowed(&mut dot_pin)),
     );
 
     // These are implicitly used by the spi driver if they are in the correct mode

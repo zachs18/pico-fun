@@ -1,4 +1,5 @@
 //! <https://github.com/mcauser/micropython-max7219/blob/master/max7219.py>
+#![no_std]
 
 use core::mem::ManuallyDrop;
 
@@ -8,8 +9,7 @@ use rp_pico::hal::{
     spi::{Enabled, SpiDevice},
     Spi,
 };
-
-use crate::noploop;
+use utils::noploop;
 
 pub struct Max7219<'a, SD: SpiDevice, CSP: OutputPin, const COUNT: usize> {
     spi: &'a mut Spi<Enabled, SD, 16>,

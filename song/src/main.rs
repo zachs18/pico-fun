@@ -24,7 +24,6 @@ use board_support::{
     pac::interrupt,
 };
 use core::{
-    arch::asm,
     cell::RefCell,
     future::Future,
     mem::MaybeUninit,
@@ -44,10 +43,10 @@ use usb_device::{
     prelude::{UsbDevice, UsbDeviceBuilder, UsbVidPid},
 };
 use usbd_serial::SerialPort;
+use utils::noploop;
 
 pub mod alloc_utils;
 pub mod lcd;
-pub mod max7219;
 mod midi_notes;
 
 #[derive(Clone, Copy)]
@@ -69,14 +68,6 @@ static mut USB_SERIAL: Option<SerialPort<board_support::hal::usb::UsbBus>> = Non
 
 static PANIC_LED: Mutex<RefCell<Option<Pin<Gpio25, Output<PushPull>>>>> =
     Mutex::new(RefCell::new(None));
-
-fn noploop(count: usize) {
-    for _ in 0..count {
-        unsafe {
-            asm!("nop", "nop", "nop", "nop", "nop", "nop", "nop", "nop", "nop",);
-        }
-    }
-}
 
 #[panic_handler]
 fn panic_led(info: &PanicInfo) -> ! {
@@ -493,7 +484,7 @@ fn real_main() -> ! {
     let _spi_mosi = pins.gpio7.into_mode::<hal::gpio::FunctionSpi>();
     // let _spi_miso = pins.gpio4.into_mode::<hal::gpio::FunctionSpi>();
     let mut spi_cs = pins.gpio1.into_push_pull_output(); // TODO: SPI CS supposed to be pulldown (assert low, not asserted high)?
-    let spi = hal::Spi::<_, _, 8>::new(pac.SPI0);
+    let spi = hal::Spi::<_, _, 16>::new(pac.SPI0);
 
     // Exchange the uninitialised SPI driver for an initialised one
     let mut spi = spi.init(

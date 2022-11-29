@@ -8,6 +8,9 @@ members = [
     "arc-polyfill",
     "async-utils",
     "hal-exts",
+    "utils",
+    "sevenseg-5611bs",
+    "max7219",
 ]
 exclude = [
     "rp-hal",

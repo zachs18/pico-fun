@@ -28,6 +28,8 @@ nb = "1.0.0"
 bytemuck = { version = "1.12.1", default-features = false }
 hal-exts = { version = "0.1.0", path = "../hal-exts" }
 async-utils = { version = "0.1.0", path = "../async-utils" }
+utils = { version = "0.1.0", path = "../utils" }
+max7219 = { version = "0.1.0", path = "../max7219" }
 # alloc-cortex-m = "0.4.2"
 
 # but you can use any BSP. Uncomment this to use the pro_micro_rp2040 BSP instead
