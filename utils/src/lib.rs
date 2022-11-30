@@ -14,6 +14,39 @@ pub fn noploop(count: usize) {
     }
 }
 
+pub struct AssertSendSync<T: ?Sized>(T);
+
+unsafe impl<T> Send for AssertSendSync<T> {}
+unsafe impl<T> Sync for AssertSendSync<T> {}
+
+impl<T> AssertSendSync<T> {
+    /// SAFETY: Caller must ensure that this value is actually sound to send and share between threads.
+    pub unsafe fn new(value: T) -> Self
+    where
+        T: Sized,
+    {
+        AssertSendSync(value)
+    }
+
+    pub fn into_inner(self) -> T {
+        self.0
+    }
+}
+
+impl<T: ?Sized> Deref for AssertSendSync<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<T: ?Sized> DerefMut for AssertSendSync<T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
 pub enum MaybeOwned<'a, T> {
     Owned(T),
     Borrowed(&'a mut T),

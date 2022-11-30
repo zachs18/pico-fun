@@ -5,7 +5,7 @@ use core::cell::{RefCell, UnsafeCell};
 use core::future::Future;
 use core::mem::MaybeUninit;
 pub use core::pin::Pin as StdPin;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use core::task::{Poll, RawWaker, RawWakerVTable, Waker};
 
 use alloc::boxed::Box;
@@ -18,6 +18,7 @@ use critical_section::Mutex;
 use fugit::Duration;
 use rp_pico as board_support;
 use rp_pico::hal::timer::ScheduleAlarmError;
+use utils::AssertSendSync;
 
 pub mod channel;
 
@@ -133,7 +134,10 @@ impl Runtime {
 
 pub struct Sleep<'a, Alarm: AlarmExt> {
     alarm: &'a mut Alarm,
-    wake: Arc<(AtomicBool, Mutex<RefCell<Option<Waker>>>)>,
+    /// The boolean is true if the sleep is finished.
+    /// The waker is Some if there is a task waiting.
+    /// `hal_exts::AlarmExt::register` handles clearing the interrupt flag when it occurs.
+    shared: Arc<(AtomicBool, Mutex<RefCell<Option<Waker>>>)>,
 }
 
 impl<'a, Alarm: AlarmExt> Sleep<'a, Alarm> {
@@ -146,26 +150,30 @@ impl<'a, Alarm: AlarmExt> Sleep<'a, Alarm> {
 
         match alarm.schedule(countdown) {
             Ok(()) => {
-                let wake: Arc<(AtomicBool, Mutex<RefCell<Option<Waker>>>)> =
+                let shared: Arc<(AtomicBool, Mutex<RefCell<Option<Waker>>>)> =
                     Arc::new((AtomicBool::new(false), Mutex::new(RefCell::new(None))));
-                alarm.register({
-                    let wake = wake.clone();
+                let handler = {
+                    let shared = shared.clone();
                     Box::new(move || {
                         critical_section::with(|cs| {
-                            wake.0.store(true, Ordering::Release);
-                            if let Some(waker) = wake.1.borrow(cs).take() {
+                            shared.0.store(true, Ordering::Release);
+                            if let Some(waker) = shared.1.borrow(cs).take() {
                                 waker.wake();
                             }
                         })
                     })
+                };
+
+                critical_section::with(|cs| {
+                    alarm.register(cs, handler);
+                    alarm.enable_interrupt();
                 });
 
                 unsafe {
                     board_support::hal::pac::NVIC::unmask(Alarm::interrupt());
                 };
-                alarm.enable_interrupt();
 
-                Ok(Self { alarm, wake })
+                Ok(Self { alarm, shared })
             }
             Err(err) => Err(err),
         }
@@ -179,11 +187,14 @@ impl<'a, Alarm: AlarmExt> Future for Sleep<'a, Alarm> {
         self: StdPin<&mut Self>,
         cx: &mut core::task::Context<'_>,
     ) -> core::task::Poll<Self::Output> {
+        if self.shared.0.load(Ordering::Acquire) {
+            return Poll::Ready(());
+        }
         critical_section::with(|cs| {
-            if self.wake.0.load(Ordering::Acquire) {
+            if self.shared.0.load(Ordering::Acquire) {
                 Poll::Ready(())
             } else {
-                self.wake.1.borrow(cs).replace(Some(cx.waker().clone()));
+                self.shared.1.borrow(cs).replace(Some(cx.waker().clone()));
 
                 Poll::Pending
             }
@@ -197,12 +208,122 @@ impl<'a, Alarm: AlarmExt> Drop for Sleep<'a, Alarm> {
             self.alarm.disable_interrupt();
             self.alarm.clear_interrupt();
             board_support::hal::pac::NVIC::mask(Alarm::interrupt());
-            if !self.wake.0.load(Ordering::Acquire) {
+            if !self.shared.0.load(Ordering::Acquire) {
                 // Remove the waker (Prob not necessary)
-                self.wake.1.borrow(cs).replace(None);
+                self.shared.1.borrow(cs).replace(None);
             }
-            self.alarm.unregister();
+            self.alarm.unregister(cs);
         })
+    }
+}
+
+pub struct Interval<Alarm: AlarmExt + 'static> {
+    shared: Arc<(
+        AtomicUsize,
+        Mutex<RefCell<(Option<Waker>, Option<AssertSendSync<Alarm>>)>>,
+    )>,
+}
+
+impl<Alarm: AlarmExt + 'static> Interval<Alarm> {
+    pub fn new<const NUM: u32, const DENOM: u32>(
+        mut alarm: Alarm,
+        countdown: Duration<u32, NUM, DENOM>,
+    ) -> Result<Self, ScheduleAlarmError> {
+        alarm.disable_interrupt();
+        alarm.clear_interrupt();
+
+        match alarm.schedule(countdown) {
+            Ok(()) => {
+                let shared: Arc<(
+                    AtomicUsize,
+                    Mutex<RefCell<(Option<Waker>, Option<AssertSendSync<Alarm>>)>>,
+                )> = Arc::new((
+                    AtomicUsize::new(0),
+                    Mutex::new(RefCell::new((
+                        None,
+                        // SAFETY: alarm will only be accessed on this core.
+                        Some(unsafe { AssertSendSync::new(alarm) }),
+                    ))),
+                ));
+                let handler = {
+                    let shared = shared.clone();
+                    Box::new(move || {
+                        critical_section::with(|cs| {
+                            let prev = shared.0.load(Ordering::Acquire);
+                            shared.0.store(prev.saturating_add(1), Ordering::Release);
+                            let mut shared = shared.1.borrow_ref_mut(cs);
+                            if let Some(waker) = shared.0.take() {
+                                waker.wake();
+                            }
+                            if let Some(alarm) = &mut shared.1 {
+                                alarm
+                                    .schedule(countdown)
+                                    .expect("this countdown succeeded once, it should not fail");
+                            }
+                        })
+                    })
+                };
+
+                critical_section::with(|cs| {
+                    let mut shared = shared.1.borrow_ref_mut(cs);
+                    let alarm = shared.1.as_mut().unwrap();
+                    alarm.register(cs, handler);
+
+                    alarm.enable_interrupt();
+                });
+
+                unsafe {
+                    board_support::hal::pac::NVIC::unmask(Alarm::interrupt());
+                };
+
+                Ok(Self { shared })
+            }
+            Err(err) => Err(err),
+        }
+    }
+
+    pub fn cancel(self) -> Alarm {
+        critical_section::with(|cs| {
+            let (_waker, alarm) = self.shared.1.borrow(cs).take();
+            let mut alarm = alarm.unwrap().into_inner();
+            alarm.disable_interrupt();
+            alarm.clear_interrupt();
+            board_support::hal::pac::NVIC::mask(Alarm::interrupt());
+            alarm.unregister(cs);
+            alarm
+        })
+    }
+}
+
+impl<Alarm: AlarmExt + 'static> Future for &Interval<Alarm> {
+    type Output = ();
+
+    fn poll(self: StdPin<&mut Self>, cx: &mut core::task::Context<'_>) -> Poll<Self::Output> {
+        critical_section::with(|cs| {
+            let prev = self.shared.0.load(Ordering::Acquire);
+            if prev > 0 {
+                self.shared.0.store(prev - 1, Ordering::Release);
+                Poll::Ready(())
+            } else {
+                let mut shared = self.shared.1.borrow_ref_mut(cs);
+                shared.0.replace(cx.waker().clone());
+
+                Poll::Pending
+            }
+        })
+    }
+}
+
+impl<Alarm: AlarmExt + 'static> Drop for Interval<Alarm> {
+    fn drop(&mut self) {
+        critical_section::with(|cs| {
+            let (_waker, alarm) = self.shared.1.borrow(cs).take();
+            let mut alarm = alarm.unwrap().into_inner();
+            alarm.disable_interrupt();
+            alarm.clear_interrupt();
+            board_support::hal::pac::NVIC::mask(Alarm::interrupt());
+            alarm.unregister(cs);
+        });
     }
 }
 

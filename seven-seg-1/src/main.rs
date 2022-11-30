@@ -4,7 +4,7 @@
 #![no_main]
 extern crate alloc;
 
-use async_utils::{Runtime, Sleep};
+use async_utils::{Interval, Runtime, Sleep};
 use core::{cell::RefCell, mem::MaybeUninit, panic::PanicInfo};
 use critical_section::Mutex;
 use embedded_hal::digital::v2::OutputPin;
@@ -223,16 +223,96 @@ fn real_main() -> ! {
         }
     });
 
-    let mut alarm2 = timer.alarm_2().unwrap();
+    let alarm2 = timer.alarm_2().unwrap();
+    let interval2 = Interval::new(alarm2, MillisDurationU32::from_ticks(200)).unwrap();
+    #[allow(non_snake_case)]
     runtime.spawn(async move {
         let mut max7219 = max7219::Max7219::<_, _, 1>::new(&mut spi, Some(&mut spi_cs)).unwrap();
-        let mut counter: u64 = 0;
+        let mut hcounter: u64 = 255;
+        let mut vcounter: [u8; 8] = [1; 8];
+        let interval2 = &interval2;
+        #[cfg(any())]
         loop {
-            max7219.show(bytemuck::cast_ref(&counter)).unwrap();
-            counter += 1;
-            Sleep::new(&mut alarm2, MillisDurationU32::from_ticks(10))
-                .unwrap()
-                .await;
+            max7219
+                .show(bytemuck::cast_ref(
+                    &(hcounter | bytemuck::cast::<_, u64>(vcounter)),
+                ))
+                .unwrap();
+            hcounter = hcounter.rotate_right(8);
+            interval2.await;
+
+            max7219
+                .show(bytemuck::cast_ref(
+                    &(hcounter | bytemuck::cast::<_, u64>(vcounter)),
+                ))
+                .unwrap();
+            vcounter = vcounter.map(|i| i.rotate_right(1));
+            interval2.await;
+        }
+
+        fn rotate_bits(value: u64) -> u64 {
+            let mut result = 0;
+            for y in 0..8 {
+                for x in 0..8 {
+                    if value & (1u64 << (8 * y + x)) != 0 {
+                        result |= 1u64 << (8 * x + 7 - y);
+                    }
+                }
+            }
+
+            result
+        }
+
+        let L: [u8; 8] = bytemuck::cast(rotate_bits(bytemuck::cast::<[u8; 8], u64>([
+            0,
+            0b0100_0000,
+            0b0100_0000,
+            0b0100_0000,
+            0b0100_0000,
+            0b0100_0000,
+            0b0111_1110,
+            0,
+        ])));
+        let E: [u8; 8] = bytemuck::cast(rotate_bits(bytemuck::cast::<[u8; 8], u64>([
+            0,
+            0b0111_1110,
+            0b0100_0000,
+            0b0111_1000,
+            0b0100_0000,
+            0b0100_0000,
+            0b0111_1110,
+            0,
+        ])));
+        let D: [u8; 8] = bytemuck::cast(rotate_bits(bytemuck::cast::<[u8; 8], u64>([
+            0,
+            0b0111_1100,
+            0b0100_0010,
+            0b0100_0010,
+            0b0100_0010,
+            0b0100_0010,
+            0b0111_1100,
+            0,
+        ])));
+
+        let smile: [u8; 8] = bytemuck::cast(rotate_bits(bytemuck::cast::<[u8; 8], u64>([
+            0b0011_1100,
+            0b0100_0010,
+            0b1010_0101,
+            0b1000_0001,
+            0b1010_0101,
+            0b1001_1001,
+            0b0100_0010,
+            0b0011_1100,
+        ])));
+
+        let blank = bytemuck::cast(0u64);
+
+        #[cfg(all())]
+        loop {
+            for disp in [L, E, D, blank, smile, smile, blank] {
+                max7219.show(bytemuck::cast_ref(&disp)).unwrap();
+                interval2.await;
+            }
         }
     });
 
