@@ -153,6 +153,13 @@ impl<
         self.write_byte(0)
     }
 
+    pub fn set_dot(&mut self, value: bool) -> Result<(), PinDot::Error> {
+        if let Some(dot) = self.dot.as_mut() {
+            dot.set(value)?;
+        }
+        Ok(())
+    }
+
     pub fn write_byte(&mut self, byte: u8) -> Result<(), PinA::Error> {
         self.a.set((byte & 0b1000_0000 != 0) ^ COMMON_ANODE)?;
         self.b.set((byte & 0b0100_0000 != 0) ^ COMMON_ANODE)?;

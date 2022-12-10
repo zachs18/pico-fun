@@ -19,11 +19,15 @@ fn s16le(data: &[u8]) -> Vec<u32> {
     // let mut cur_error = 0_i64;
     let mut output_data = vec![];
     let mut bit_pusher = bit_pusher(&mut output_data);
+    let mut prev_bit = false;
     for word in data
         .chunks_exact(2)
         .map(|chunk| bytemuck::cast::<[u8; 2], i16>(chunk.try_into().unwrap()))
     {
-        bit_pusher(word > 0);
+        if word.abs() >= 600 {
+            prev_bit = word > 0;
+        }
+        bit_pusher(prev_bit);
     }
     drop(bit_pusher);
     output_data

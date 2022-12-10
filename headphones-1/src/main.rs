@@ -5,6 +5,7 @@
 extern crate alloc;
 
 use async_utils::{Interval, Runtime, Sleep};
+use board_support::hal::pio::PIOBuilder;
 use board_support::hal::prelude::_rphal_pio_PIOExt;
 use board_support::hal::pwm::{Slice, SliceId, SliceMode, ValidSliceMode};
 use core::future::Future;
@@ -578,17 +579,17 @@ fn real_main() -> ! {
         }
     });
 
-    let pwm_slices = hal::pwm::Slices::new(pac.PWM, &mut pac.RESETS);
+    // let pwm_slices = hal::pwm::Slices::new(pac.PWM, &mut pac.RESETS);
 
-    let mut headphones_pwm = pwm_slices.pwm5;
-    headphones_pwm.set_ph_correct();
-    headphones_pwm.enable();
-    headphones_pwm.set_div_int(1);
-    headphones_pwm.set_div_frac(0);
-    headphones_pwm.set_top(u16::MAX);
+    // let mut headphones_pwm = pwm_slices.pwm5;
+    // headphones_pwm.set_ph_correct();
+    // headphones_pwm.enable();
+    // headphones_pwm.set_div_int(1);
+    // headphones_pwm.set_div_frac(0);
+    // headphones_pwm.set_top(u16::MAX);
 
-    let _headphones = headphones_pwm.channel_a.output_to(pins.gpio10);
-    let _led = headphones_pwm.channel_b.output_to(pins.gpio11);
+    // let _headphones = headphones_pwm.channel_a.output_to(pins.gpio10);
+    // let _led = headphones_pwm.channel_b.output_to(pins.gpio11);
 
     let mut alarm0 = timer.alarm_0().unwrap();
     // runtime.block_on(async {
@@ -603,46 +604,86 @@ fn real_main() -> ! {
     //     }
     // })
 
-    let (mut pio0, sm0, sm1, sm2, sm3) = pac.PIO0.split(&mut pac.RESETS);
+    let (mut pio0, sm0, _sm1, _sm2, _sm3) = pac.PIO0.split(&mut pac.RESETS);
+    let program = pio_proc::pio_file!("./pcm.pio", select_program("pcm"));
+    let installed = pio0.install(&program.program).unwrap();
+
+    let _headphone_pin = pins.gpio10.into_mode::<hal::gpio::FunctionPio0>();
+
+    let (mut sm0, _rx, mut tx) = PIOBuilder::from_program(installed)
+        .out_pins(10, 1)
+        .autopull(true)
+        .pull_threshold(32)
+        .clock_divisor(88.577) // (125_000_000_f32 / 44_100_f32 / 32_f32)
+        .buffers(hal::pio::Buffers::OnlyTx)
+        .out_sticky(true)
+        .out_shift_direction(hal::pio::ShiftDirection::Left)
+        .build(sm0);
+
+    sm0.set_pindirs([(10, hal::pio::PinDir::Output)]);
+
+    let sm0 = sm0.start();
+
+    static SONG_DATA: &[u8] = include_bytes!("../../pcm-encode/output.pcm_1le");
 
     runtime.block_on(async {
-        Sleep::new(&mut alarm0, MillisDurationU32::from_ticks(3000))
-            .unwrap()
-            .await;
+        let mut aaa = 0;
         loop {
-            for digit in 0..16 {
-                sevenseg.write_digit(digit).unwrap();
-
-                Sleep::new(&mut alarm0, MillisDurationU32::from_ticks(300))
-                    .unwrap()
-                    .await;
-                // headphones_pwm.channel_b.set_duty((digit as u16) << 12);
-                play_note(
-                    Note::PlayShort(digit as i8, 250),
-                    &mut headphones_pwm,
-                    &mut alarm0,
-                )
-                .await;
-
-                Sleep::new(&mut alarm0, MillisDurationU32::from_ticks(300))
-                    .unwrap()
-                    .await;
-            }
-            sevenseg.clear().unwrap();
-
-            Sleep::new(&mut alarm0, MillisDurationU32::from_ticks(300))
-                .unwrap()
-                .await;
-            for &note in SONG_2 {
-                // let _ = lyric_sender.try_send(lyric);
-                play_note(note, &mut headphones_pwm, &mut alarm0).await;
-            }
-            for &(note, lyric) in SONG_1 {
-                // let _ = lyric_sender.try_send(lyric);
-                play_note(note, &mut headphones_pwm, &mut alarm0).await;
+            sevenseg.write_digit(aaa).unwrap();
+            sevenseg.set_dot(true).unwrap();
+            aaa += 1;
+            for bytes in SONG_DATA.chunks(4) {
+                let mut digit = 0;
+                while !tx.write(bytemuck::pod_read_unaligned(bytes)) {
+                    Sleep::new(&mut alarm0, MillisDurationU32::from_ticks(5))
+                        .unwrap()
+                        .await;
+                    sevenseg.write_digit(digit).unwrap();
+                    digit += 1;
+                }
+                // sevenseg.write_digit(digit).unwrap();
             }
         }
     })
+
+    // runtime.block_on(async {
+    //     Sleep::new(&mut alarm0, MillisDurationU32::from_ticks(3000))
+    //         .unwrap()
+    //         .await;
+    //     loop {
+    //         for digit in 0..16 {
+    //             sevenseg.write_digit(digit).unwrap();
+
+    //             Sleep::new(&mut alarm0, MillisDurationU32::from_ticks(300))
+    //                 .unwrap()
+    //                 .await;
+    //             // headphones_pwm.channel_b.set_duty((digit as u16) << 12);
+    //             play_note(
+    //                 Note::PlayShort(digit as i8, 250),
+    //                 &mut headphones_pwm,
+    //                 &mut alarm0,
+    //             )
+    //             .await;
+
+    //             Sleep::new(&mut alarm0, MillisDurationU32::from_ticks(300))
+    //                 .unwrap()
+    //                 .await;
+    //         }
+    //         sevenseg.clear().unwrap();
+
+    //         Sleep::new(&mut alarm0, MillisDurationU32::from_ticks(300))
+    //             .unwrap()
+    //             .await;
+    //         for &note in SONG_2 {
+    //             // let _ = lyric_sender.try_send(lyric);
+    //             play_note(note, &mut headphones_pwm, &mut alarm0).await;
+    //         }
+    //         for &(note, lyric) in SONG_1 {
+    //             // let _ = lyric_sender.try_send(lyric);
+    //             play_note(note, &mut headphones_pwm, &mut alarm0).await;
+    //         }
+    //     }
+    // })
 }
 
 // /// This function is called whenever the USB Hardware generates an Interrupt

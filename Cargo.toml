@@ -19,6 +19,7 @@ exclude = [
     "generate-midi-notes",
     "pcm-encode",
 ]
+resolver = "2"
 
 # cargo build/run
 [profile.dev]
