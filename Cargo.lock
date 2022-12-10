@@ -243,6 +243,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "headphones-1"
+version = "0.1.0"
+dependencies = [
+ "arc-polyfill",
+ "async-utils",
+ "bytemuck",
+ "cortex-m",
+ "cortex-m-rt",
+ "critical-section 1.1.1",
+ "defmt",
+ "embedded-hal",
+ "fugit",
+ "hal-exts",
+ "i2c-pio",
+ "libm",
+ "linked_list_allocator",
+ "max7219",
+ "nb 1.0.0",
+ "once_cell",
+ "rp-pico",
+ "sevenseg-5611bs",
+ "usb-device",
+ "usbd-serial",
+ "utils",
+]
+
+[[package]]
 name = "i2c-pio"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -4,6 +4,7 @@ members = [
     "song",
     "song-midi",
     "seven-seg-1",
+    "headphones-1",
     "rp2040-project-template",
     "arc-polyfill",
     "async-utils",
@@ -16,6 +17,7 @@ exclude = [
     "rp-hal",
     "critical-section",
     "generate-midi-notes",
+    "pcm-encode",
 ]
 
 # cargo build/run

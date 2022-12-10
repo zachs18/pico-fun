@@ -8,6 +8,7 @@ use async_utils::{Interval, Runtime, Sleep};
 use core::{cell::RefCell, mem::MaybeUninit, panic::PanicInfo};
 use critical_section::Mutex;
 use embedded_hal::digital::v2::OutputPin;
+use embedded_hal::PwmPin;
 use fugit::{MillisDurationU32, RateExtU32};
 use hal_exts::OutputPinExt;
 use rp_pico as board_support;
@@ -316,7 +317,17 @@ fn real_main() -> ! {
         }
     });
 
-    let mut led = pins.gpio11.into_push_pull_output();
+    let pwm_slices = hal::pwm::Slices::new(pac.PWM, &mut pac.RESETS);
+
+    let mut led_pwm = pwm_slices.pwm5;
+    led_pwm.set_ph_correct();
+    led_pwm.enable();
+    led_pwm.set_div_int(1);
+    led_pwm.set_div_frac(0);
+    led_pwm.set_top(u16::MAX);
+
+    let _headphones = led_pwm.channel_a.output_to(pins.gpio10);
+    let _led = led_pwm.channel_b.output_to(pins.gpio11);
 
     let mut alarm0 = timer.alarm_0().unwrap();
     // runtime.block_on(async {
@@ -334,7 +345,7 @@ fn real_main() -> ! {
         loop {
             for digit in 0..16 {
                 sevenseg.write_digit(digit).unwrap();
-                led.set(digit & 1 != 0).unwrap();
+                led_pwm.channel_b.set_duty((digit as u16) << 12);
 
                 Sleep::new(&mut alarm0, MillisDurationU32::from_ticks(300))
                     .unwrap()

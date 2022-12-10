@@ -1,0 +1,46 @@
+[package]
+edition = "2021"
+name = "headphones-1"
+version = "0.1.0"
+
+[dependencies]
+cortex-m = "0.7"
+cortex-m-rt = "0.7"
+embedded-hal = { version = "0.2.5", features = ["unproven"] }
+
+defmt = "0.3"
+#defmt-rtt = "0.3"
+#panic-probe = { version = "0.3", features = ["print-defmt"] }
+
+# We're using a Pico by default on this template
+rp-pico = "0.5"
+libm = "0.2.5"
+i2c-pio = "0.4.0"
+fugit = "0.3.6"
+usb-device = "0.2.9"
+usbd-serial = "0.1.1"
+once_cell = { version = "1.15.0", default-features = false }
+#lcd-lcm1602-i2c = "0.1.0"
+critical-section = "1.1.1"
+linked_list_allocator = { version = "0.10.4", default-features = false, features = ["const_mut_refs"] }
+nb = "1.0.0"
+#futures = { version = "0.3.25", default-features = false }
+bytemuck = { version = "1.12.1", default-features = false }
+async-utils = { version = "0.1.0", path = "../async-utils" }
+hal-exts = { version = "0.1.0", path = "../hal-exts" }
+sevenseg-5611bs = { version = "0.1.0", path = "../sevenseg-5611bs" }
+utils = { version = "0.1.0", path = "../utils" }
+max7219 = { version = "0.1.0", path = "../max7219" }
+# alloc-cortex-m = "0.4.2"
+
+# but you can use any BSP. Uncomment this to use the pro_micro_rp2040 BSP instead
+# sparkfun-pro-micro-rp2040 = "0.3"
+
+# If you're not going to use a Board Support Package you'll need these:
+# rp2040-hal = { version="0.6", features=["rt"] }
+# rp2040-boot2 = "0.2"
+
+
+[dependencies.arc-polyfill]
+package = "arc-polyfill"
+path = "../arc-polyfill"
