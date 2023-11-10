@@ -1,6 +1,6 @@
 [package]
 edition = "2021"
-name = "song"
+name = "display"
 version = "0.1.0"
 
 [dependencies]
@@ -26,10 +26,13 @@ linked_list_allocator = { version = "0.10.4", default-features = false, features
 nb = "1.0.0"
 #futures = { version = "0.3.25", default-features = false }
 bytemuck = { version = "1.12.1", default-features = false }
-hal-exts = { version = "0.1.0", path = "../hal-exts" }
 async-utils = { version = "0.1.0", path = "../async-utils" }
+hal-exts = { version = "0.1.0", path = "../hal-exts" }
+#sevenseg-5611bs = { version = "0.1.0", path = "../sevenseg-5611bs" }
 utils = { version = "0.1.0", path = "../utils" }
-max7219 = { version = "0.1.0", path = "../max7219" }
+#max7219 = { version = "0.1.0", path = "../max7219" }
+pio-proc = "0.2.1"
+pio = "0.2.0"
 # alloc-cortex-m = "0.4.2"
 
 # but you can use any BSP. Uncomment this to use the pro_micro_rp2040 BSP instead

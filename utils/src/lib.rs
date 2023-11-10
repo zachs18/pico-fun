@@ -5,6 +5,8 @@ use core::{
     ops::{Deref, DerefMut},
 };
 
+use embedded_hal::digital::v2::{InputPin, OutputPin};
+
 /// Executes at least `10 * count` nops
 pub fn noploop(count: usize) {
     for _ in 0..count {
@@ -99,3 +101,65 @@ impl<'a, T> From<&'a mut T> for MaybeOwned<'a, T> {
         MaybeOwned::Borrowed(mut_ref)
     }
 }
+
+#[repr(transparent)]
+pub struct InvertedPin<P: ?Sized> {
+    pub pin: P,
+}
+
+impl<P: ?Sized> InvertedPin<P> {
+    pub fn new(pin: P) -> Self
+    where
+        P: Sized,
+    {
+        Self { pin }
+    }
+
+    pub fn wrap_ref(pin: &P) -> &Self {
+        unsafe { &*(pin as *const P as *const Self) }
+    }
+
+    pub fn wrap_mut(pin: &mut P) -> &mut Self {
+        unsafe { &mut *(pin as *mut P as *mut Self) }
+    }
+}
+
+impl<P: InputPin + ?Sized> InputPin for InvertedPin<P> {
+    type Error = P::Error;
+
+    fn is_high(&self) -> Result<bool, Self::Error> {
+        self.pin.is_low()
+    }
+
+    fn is_low(&self) -> Result<bool, Self::Error> {
+        self.pin.is_high()
+    }
+}
+
+impl<P: OutputPin + ?Sized> OutputPin for InvertedPin<P> {
+    type Error = P::Error;
+
+    fn set_low(&mut self) -> Result<(), Self::Error> {
+        self.pin.set_high()
+    }
+
+    fn set_high(&mut self) -> Result<(), Self::Error> {
+        self.pin.set_low()
+    }
+}
+
+pub trait PinExt {
+    fn invert_pin(self) -> InvertedPin<Self>
+    where
+        Self: Sized,
+    {
+        InvertedPin { pin: self }
+    }
+    fn as_inverted_pin(&self) -> &InvertedPin<Self> {
+        InvertedPin::wrap_ref(self)
+    }
+    fn as_inverted_pin_mut(&mut self) -> &mut InvertedPin<Self> {
+        InvertedPin::wrap_mut(self)
+    }
+}
+impl<P: ?Sized> PinExt for P {}

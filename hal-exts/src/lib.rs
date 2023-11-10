@@ -3,9 +3,11 @@ extern crate alloc;
 
 use alloc::boxed::Box;
 use core::cell::RefCell;
+use core::mem::ManuallyDrop;
 use embedded_hal::digital::v2::OutputPin;
 
 use critical_section::{CriticalSection, Mutex};
+
 use rp_pico::hal::{
     pac::interrupt,
     timer::{Alarm, Alarm0, Alarm1, Alarm2, Alarm3},
@@ -75,7 +77,7 @@ macro_rules! make_timer_irq {
             }
             unsafe fn clear_interrupt_without_ownership() {
                 // TODO: I thought the docs for `clear_interrupt` meant that the irq wouldn't run again, but that appears to not be true.
-                let mut aaa: Self = unsafe { core::mem::transmute(()) };
+                let mut aaa: ManuallyDrop<Self> = unsafe { core::mem::transmute(()) };
                 aaa.clear_interrupt();
             }
         }

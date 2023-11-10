@@ -5,13 +5,15 @@ members = [
     "song-midi",
     "seven-seg-1",
     "headphones-1",
+    "headphones-2",
+    "display",
     "rp2040-project-template",
     "arc-polyfill",
     "async-utils",
     "hal-exts",
     "utils",
     "sevenseg-5611bs",
-    "max7219",
+    "max7219", "st7789",
 ]
 exclude = [
     "rp-hal",

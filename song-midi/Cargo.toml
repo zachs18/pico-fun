@@ -13,9 +13,9 @@ defmt = "0.3"
 #panic-probe = { version = "0.3", features = ["print-defmt"] }
 
 # We're using a Pico by default on this template
-rp-pico = "0.5"
+rp-pico = "0.8"
 libm = "0.2.5"
-i2c-pio = "0.4.0"
+i2c-pio = "0.7.0"
 fugit = "0.3.6"
 usb-device = "0.2.9"
 usbd-serial = "0.1.1"

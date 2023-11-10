@@ -1,7 +1,7 @@
 #![no_std]
 extern crate alloc;
 
-use core::cell::{RefCell, UnsafeCell};
+use core::cell::{Cell, RefCell, UnsafeCell};
 use core::future::Future;
 use core::mem::MaybeUninit;
 pub use core::pin::Pin as StdPin;
@@ -15,7 +15,7 @@ use hal_exts::AlarmExt;
 
 use cortex_m::asm::wfi;
 use critical_section::Mutex;
-use fugit::Duration;
+use fugit::MicrosDurationU32;
 use rp_pico as board_support;
 use rp_pico::hal::timer::ScheduleAlarmError;
 use utils::AssertSendSync;
@@ -141,9 +141,9 @@ pub struct Sleep<'a, Alarm: AlarmExt> {
 }
 
 impl<'a, Alarm: AlarmExt> Sleep<'a, Alarm> {
-    pub fn new<const NUM: u32, const DENOM: u32>(
+    pub fn new(
         alarm: &'a mut Alarm,
-        countdown: Duration<u32, NUM, DENOM>,
+        countdown: MicrosDurationU32,
     ) -> Result<Self, ScheduleAlarmError> {
         alarm.disable_interrupt();
         alarm.clear_interrupt();
@@ -217,45 +217,45 @@ impl<'a, Alarm: AlarmExt> Drop for Sleep<'a, Alarm> {
     }
 }
 
+struct IntervalShared<Alarm> {
+    /// The number of intervals that have been passed but not yet awaited.
+    /// Awaiting the interval will immediately use one of these if one is available.
+    ///
+    /// If `usize::MAX` ticks have passed, this will not count more ticks (i.e. it saturates at `usize::MAX`)
+    ticks_passed: AtomicUsize,
+    waker: Mutex<Cell<Option<Waker>>>,
+    alarm: Mutex<RefCell<Option<AssertSendSync<Alarm>>>>,
+}
+
 pub struct Interval<Alarm: AlarmExt + 'static> {
-    shared: Arc<(
-        AtomicUsize,
-        Mutex<RefCell<(Option<Waker>, Option<AssertSendSync<Alarm>>)>>,
-    )>,
+    shared: Arc<IntervalShared<Alarm>>,
 }
 
 impl<Alarm: AlarmExt + 'static> Interval<Alarm> {
-    pub fn new<const NUM: u32, const DENOM: u32>(
-        mut alarm: Alarm,
-        countdown: Duration<u32, NUM, DENOM>,
-    ) -> Result<Self, ScheduleAlarmError> {
+    pub fn new(mut alarm: Alarm, countdown: MicrosDurationU32) -> Result<Self, ScheduleAlarmError> {
         alarm.disable_interrupt();
         alarm.clear_interrupt();
 
         match alarm.schedule(countdown) {
             Ok(()) => {
-                let shared: Arc<(
-                    AtomicUsize,
-                    Mutex<RefCell<(Option<Waker>, Option<AssertSendSync<Alarm>>)>>,
-                )> = Arc::new((
-                    AtomicUsize::new(0),
-                    Mutex::new(RefCell::new((
-                        None,
-                        // SAFETY: alarm will only be accessed on this core.
-                        Some(unsafe { AssertSendSync::new(alarm) }),
-                    ))),
-                ));
+                let shared = Arc::new(IntervalShared {
+                    ticks_passed: AtomicUsize::new(0),
+                    waker: Mutex::new(Cell::new(None)),
+                    // SAFETY: alarm will only be accessed on this core.
+                    alarm: Mutex::new(RefCell::new(Some(unsafe { AssertSendSync::new(alarm) }))),
+                });
                 let handler = {
                     let shared = shared.clone();
                     Box::new(move || {
                         critical_section::with(|cs| {
-                            let prev = shared.0.load(Ordering::Acquire);
-                            shared.0.store(prev.saturating_add(1), Ordering::Release);
-                            let mut shared = shared.1.borrow_ref_mut(cs);
-                            if let Some(waker) = shared.0.take() {
+                            let prev = shared.ticks_passed.load(Ordering::Acquire);
+                            shared
+                                .ticks_passed
+                                .store(prev.saturating_add(1), Ordering::Release);
+                            if let Some(waker) = shared.waker.borrow(cs).take() {
                                 waker.wake();
                             }
-                            if let Some(alarm) = &mut shared.1 {
+                            if let Some(alarm) = &mut *shared.alarm.borrow_ref_mut(cs) {
                                 alarm
                                     .schedule(countdown)
                                     .expect("this countdown succeeded once, it should not fail");
@@ -265,8 +265,8 @@ impl<Alarm: AlarmExt + 'static> Interval<Alarm> {
                 };
 
                 critical_section::with(|cs| {
-                    let mut shared = shared.1.borrow_ref_mut(cs);
-                    let alarm = shared.1.as_mut().unwrap();
+                    let mut alarm = shared.alarm.borrow_ref_mut(cs);
+                    let alarm = alarm.as_mut().unwrap();
                     alarm.register(cs, handler);
 
                     alarm.enable_interrupt();
@@ -282,9 +282,9 @@ impl<Alarm: AlarmExt + 'static> Interval<Alarm> {
         }
     }
 
-    pub fn cancel(self) -> Alarm {
+    fn cancel_impl(&mut self) -> Alarm {
         critical_section::with(|cs| {
-            let (_waker, alarm) = self.shared.1.borrow(cs).take();
+            let alarm = self.shared.alarm.take(cs);
             let mut alarm = alarm.unwrap().into_inner();
             alarm.disable_interrupt();
             alarm.clear_interrupt();
@@ -293,6 +293,10 @@ impl<Alarm: AlarmExt + 'static> Interval<Alarm> {
             alarm
         })
     }
+
+    pub fn cancel(mut self) -> Alarm {
+        self.cancel_impl()
+    }
 }
 
 impl<Alarm: AlarmExt + 'static> Future for &Interval<Alarm> {
@@ -300,13 +304,16 @@ impl<Alarm: AlarmExt + 'static> Future for &Interval<Alarm> {
 
     fn poll(self: StdPin<&mut Self>, cx: &mut core::task::Context<'_>) -> Poll<Self::Output> {
         critical_section::with(|cs| {
-            let prev = self.shared.0.load(Ordering::Acquire);
+            let prev = self.shared.ticks_passed.load(Ordering::Acquire);
             if prev > 0 {
-                self.shared.0.store(prev - 1, Ordering::Release);
+                self.shared.ticks_passed.store(prev - 1, Ordering::Release);
                 Poll::Ready(())
             } else {
-                let mut shared = self.shared.1.borrow_ref_mut(cs);
-                shared.0.replace(cx.waker().clone());
+                let _old_waker = self
+                    .shared
+                    .waker
+                    .borrow(cs)
+                    .replace(Some(cx.waker().clone()));
 
                 Poll::Pending
             }
@@ -316,14 +323,7 @@ impl<Alarm: AlarmExt + 'static> Future for &Interval<Alarm> {
 
 impl<Alarm: AlarmExt + 'static> Drop for Interval<Alarm> {
     fn drop(&mut self) {
-        critical_section::with(|cs| {
-            let (_waker, alarm) = self.shared.1.borrow(cs).take();
-            let mut alarm = alarm.unwrap().into_inner();
-            alarm.disable_interrupt();
-            alarm.clear_interrupt();
-            board_support::hal::pac::NVIC::mask(Alarm::interrupt());
-            alarm.unregister(cs);
-        });
+        self.cancel_impl();
     }
 }
 

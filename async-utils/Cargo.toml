@@ -11,5 +11,5 @@ cortex-m = "0.7.6"
 critical-section = "1.1.1"
 fugit = "0.3.6"
 hal-exts = { version = "0.1.0", path = "../hal-exts" }
-rp-pico = "0.5.0"
+rp-pico = "0.8.0"
 utils = { version = "0.1.0", path = "../utils" }

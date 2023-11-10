@@ -1,0 +1,9 @@
+;
+; Outputs 1-bit PCM audio encoded as 32-samples per word LSB-first.
+;
+
+.program pcm
+public entry_point:
+    .wrap_target
+    out pins, 1 [31]
+    .wrap
